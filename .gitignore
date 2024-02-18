@@ -2,5 +2,5 @@ build/
 .vscode/
 ref/
 lib/
-test/**/.bin
-test/**/.hex
+test/**/*.bin
+test/**/*.hex
