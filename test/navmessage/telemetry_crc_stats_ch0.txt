@@ -1,2 +1,0 @@
-Num CRC Tests |  Successful Tests | Success rate
-           20 |                20 |            1
