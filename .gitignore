@@ -2,6 +2,6 @@ build/
 .vscode/
 ref/
 lib/
-test/
+test/*
 !test/**/*.conf
 !test/**/*.sh
