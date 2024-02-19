@@ -5,3 +5,4 @@ libs/
 test/**
 !test/**/*.sh
 !test/**/*.conf
+!test/rinex-import
