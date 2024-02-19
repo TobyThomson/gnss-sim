@@ -1,24 +1,22 @@
 # GNSS-SIM: Tool to generate realistic GNSS-signals
 ## TODO:
-[x] Generate new navmessage for satellite if required
-[x] Work out what C/A code we're on for satellite
-[x] Generate IQ sample!
-[x] Generate C/A codes
-[x] Read generated IQ data with gnss-sdr!
-[x] Modify to work with multiple satellites!
-[x] Get realtime (zmq) streaming working
-[x] Write test cases
-[x] Implement command line argument parsing
-[x] Implement RTKLIB
-[x] Implement RINEX file parsing
-
-[ ] Populate navmessages with values from supplied RINEX file
-[ ] Get all the navmessage terms formatted correctly
-
-[ ] Align sv time with simulation time
-[ ] Which satellites visible?
-[ ] Calculate visible satellite distances to receiver
-[ ] Calculate visbile satellite attenuations + phase angle
+- [x] Generate new navmessage for satellite if required
+- [x] Work out what C/A code we're on for satellite
+- [x] Generate IQ sample!
+- [x] Generate C/A codes
+- [x] Read generated IQ data with gnss-sdr!
+- [x] Modify to work with multiple satellites!
+- [x] Get realtime (zmq) streaming working
+- [x] Write test cases
+- [x] Implement command line argument parsing
+- [x] Implement RTKLIB
+- [x] Implement RINEX file parsing
+- [ ] Populate navmessages with values from supplied RINEX file
+- [ ] Get all the navmessage terms formatted correctly
+- [ ] Align sv time with simulation time
+- [ ] Which satellites visible?
+- [ ] Calculate visible satellite distances to receiver
+- [ ] Calculate visbile satellite attenuations + phase angle
 
 ## Notes:
 * Had to move ```range``` and ```geoid``` variables from bottom to top of file in rtklib's ```geoid.c``` to get it to compile (those variables initiated twice otherwise). Not sure how anyone else gets away with compiling that
