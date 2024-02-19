@@ -17,3 +17,7 @@
 [ ] Which satellites visible?
 [ ] Calculate visible satellite distances to receiver
 [ ] Calculate visbile satellite attenuations + phase angle
+
+## Notes:
+* Had to move ```range``` and ```geoid``` variables from bottom to top of file in rtklib's ```geoid.c``` to get it to compile (those variables initiated twice otherwise). Not sure how anyone else gets away with compiling that
+* Have resorted to just compiling the rtklib source files that I actually nedd rather than all of them as it appears some of them depends on their own external libraries which linking to will be a pain.

@@ -2,17 +2,18 @@
 SRC_DIR := .
 SRC_FILES := $(wildcard $(SRC_DIR)/*.c)
 
+INC_DIRS := ../include ../libs/rtklib-2.4.3/src
+RTKLIB_DIR := ../libs/rtklib-2.4.3/src
+RTKLIB_FILES := rtkcmn.c
+RTKLIB_FILES := $(addprefix $(RTKLIB_DIR)/,$(RTKLIB_FILES))
+
 BUILD_DIR := ../build
-OBJECT_FILES := $(patsubst $(SRC_DIR)/%.c,$(BUILD_DIR)/%.o,$(SRC_FILES))
+OBJECT_FILES := $(patsubst $(SRC_DIR)/%.c,$(BUILD_DIR)/%.o,$(SRC_FILES)) $(patsubst $(RTKLIB_DIR)/%.c,$(BUILD_DIR)/%.o,$(RTKLIB_FILES))
 
-INC_DIR := ../include
-LIBS_DIR := ../libs
-LIBS := 
-
-INC_PARAMS := $(foreach d, $(LIBS), -I$(LIBS_DIR)/$d/include) $(foreach d, $(INC_DIR), -I$(INC_DIR))
-LINK_PARAMS := $(foreach d, $(LIBS), -L$(LIBS_DIR)/$d/lib)
-
+INC_PARAMS := $(foreach d, $(INC_DIRS), -I$(d))
 LDFLAGS := -lczmq
+
+CFLAGS := -fpermissive
 
 # Link the object files
 gnss-sim : $(OBJECT_FILES)
@@ -20,7 +21,10 @@ gnss-sim : $(OBJECT_FILES)
 
 # Compile all the source files
 $(BUILD_DIR)/%.o : $(SRC_DIR)/%.c
-	g++ -c -o $@ $< $(INC_PARAMS)
+	g++ -c -o $@ $< $(INC_PARAMS) $(CFLAGS)
+
+$(BUILD_DIR)/%.o : $(RTKLIB_FILES)
+	g++ -c -o $@ $< $(INC_PARAMS) $(CFLAGS)
 
 # Kick-off the build directory creation
 $(OBJECT_FILES): | $(BUILD_DIR)
