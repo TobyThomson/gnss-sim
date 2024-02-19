@@ -1,7 +1,7 @@
 build/
 .vscode/
 ref/
-lib/
+libs/
 test/**
 !test/**/*.sh
 !test/**/*.conf
