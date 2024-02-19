@@ -9,10 +9,12 @@
 [x] Get realtime (zmq) streaming working
 [x] Write test cases
 [x] Implement command line argument parsing
-[ ] Implement RTKLIB
-[ ] Implement RINEX file parsing
+[x] Implement RTKLIB
+[x] Implement RINEX file parsing
 
+[ ] Populate navmessages with values from supplied RINEX file
 [ ] Get all the navmessage terms formatted correctly
+
 [ ] Align sv time with simulation time
 [ ] Which satellites visible?
 [ ] Calculate visible satellite distances to receiver
@@ -20,4 +22,4 @@
 
 ## Notes:
 * Had to move ```range``` and ```geoid``` variables from bottom to top of file in rtklib's ```geoid.c``` to get it to compile (those variables initiated twice otherwise). Not sure how anyone else gets away with compiling that
-* Have resorted to just compiling the rtklib source files that I actually nedd rather than all of them as it appears some of them depends on their own external libraries which linking to will be a pain.
+* Have resorted to just compiling the rtklib source files that I actually nedd rather than all of them as it appears some of them depends on their own external libraries which linking to will be a pain. This means that ```geoid.c``` file I modified previously is a non-issue for now (I'm not using it. Yet...)

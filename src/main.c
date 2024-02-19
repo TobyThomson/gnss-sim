@@ -11,7 +11,7 @@
 FILE *OutputFile;
 zsock_t* OutputSocket;
 
-nav_t* Ephemerides;
+nav_t Ephemerides;
 
 void dumpFile(short* buffer, int length) {
     fwrite(buffer, sizeof(buffer[0]), length, OutputFile);
@@ -22,9 +22,55 @@ void dumpSocket(short* buffer, int length) {
     zclock_sleep(10);
 }
 
-void loadEphemerides(char* ephemeridesFilename) {
-    readnav(ephemeridesFilename, Ephemerides);
-    uniqnav(Ephemerides);
+static int compareEphemerides(const void *p1, const void *p2) {
+    eph_t *q1 = (eph_t *)p1;
+    eph_t *q2 = (eph_t *)p2;
+    
+    // Compare based on satellite ID and time of ephemeris
+    if (q1->sat != q2->sat) {
+        return q1->sat - q2->sat;
+    }
+
+    // Sort in descending order of time
+    else {
+        return q2->toe.time - q1->toe.time;
+    }
+}
+
+int loadGPSEphemerides(char* ephemeridesFilename) {
+    // Only interested in GPS ephemerides for now
+    char* opt = "-SYS=G";
+
+    // Open ephemerides file
+    if (!readrnx(ephemeridesFilename, NULL, opt, NULL, &Ephemerides, NULL)) {
+        printf("Error: Could not open ephemerides file\n");
+        return -1;
+    }
+
+    // Sort the array based on satellite ID and time of ephemeris
+    qsort(Ephemerides.eph, Ephemerides.n, sizeof(eph_t), compareEphemerides);
+
+    // Declare iterators
+    int i, j;
+    
+    // Iterate through the array to keep only the most recent ephemeris for each satellite ID
+    for (i = 0, j = 1; j < Ephemerides.n; j++) {
+        if (Ephemerides.eph[j].sat != Ephemerides.eph[i].sat) {
+            // Move to the next satellite ID
+            i++;
+
+            // Keep the most recent ephemeris for this satellite ID
+            Ephemerides.eph[i] = Ephemerides.eph[j];
+        }
+    }
+
+    // Update the number of ephemeris entries after removing duplicates
+    Ephemerides.n = i + 1;
+
+    // Display result!
+    printf("GPS EPHEMERIDES LOADED: %i\n", Ephemerides.n);
+
+    return 0;
 }
 
 void showHelp() {
@@ -88,7 +134,7 @@ int main(int argc, char *argv[]) {
         return 0;
     }
 
-    loadEphemerides(ephemeridesFilename);
+    loadGPSEphemerides(ephemeridesFilename);
 
     // Enter file mode if output file specified
     if (outputFilename) {
