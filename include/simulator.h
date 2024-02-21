@@ -1,6 +1,9 @@
 #ifndef H_SIMULATOR
 #define H_SIMULATOR
 
+// For generating bitmasks
+#define BITMASK(bits) ((1 << (bits)) - 1)
+
 #define SUBFRAME_COUNT          (5UL)
 #define WORD_COUNT              (10)
 #define WORD_BIT_COUNT          (30)
@@ -46,7 +49,7 @@
 #define SUBFRAME_5_PAGE_25_ID   (51UL) // (Ref: )
 
 #define SAMPLE_FREQUENCY_MSPS   (2.5)
-#define SAMPLE_DURATION_S       (30.0)
+#define SAMPLE_DURATION_S       (65.0)
 #define SAMPLE_INTERVAL_S       (1.0 / (SAMPLE_FREQUENCY_MSPS * 1000000.0))
 #define IQ_SAMPLE_WINDOW_S      (0.1)
 #define CHANNEL_COUNT			(1)
@@ -72,6 +75,6 @@ typedef struct {
     short navBit;
 } Channel;
 
-void simulate(void (*dumpCallback)(short*, int));
+void simulate(void (*dumpCallback)(short*, int), eph_t* ephemerides);
 
 #endif

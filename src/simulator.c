@@ -1,5 +1,8 @@
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
+
+#include "../libs/rtklib-2.4.3/src/rtklib.h"
 
 #include "../include/simulator.h"
 
@@ -73,54 +76,84 @@ int cosTable[] = {
 	 245, 246, 247, 247, 248, 248, 248, 249, 249, 249, 249, 250, 250, 250, 250, 250
 };
 
-// TODO: Ensure we're not going to have an issue with number bit lengths (suspect we want to solve this with "bit-fields"/masking)
-void generateNAVFrameBoilerplate(unsigned long frame[SUBFRAME_COUNT][WORD_COUNT]) {
-    // TODO: Have these driven by something else. Made up values for now
-    // TODO: Have these in the correct types and with teh correct number of bits
-    unsigned long l2InPhaseCode = 0x2;
-    unsigned long l2InPhasePCodeDataFlag = 0;
-    unsigned long svHealth = 0b000000;
-    unsigned long iodc = 0;
-    unsigned long tgd = 0;
-    unsigned long toc = 0;
-    unsigned long af0 = 0;
-    unsigned long af1 = 0;
-    unsigned long af2 = 0;
-    unsigned long crc = 0;
-    unsigned long idot = 0;
-    unsigned long iode = 0;
-    unsigned long crs = 0;
-    unsigned long cus = 0;
-    unsigned long omega = 0;
-    unsigned long omega0 = 0;
-    unsigned long sqrtA = 0;
-    unsigned long deltaN = 0;
-    unsigned long cuc = 0;
-    unsigned long m0 = 0;
-    unsigned long cic = 0;
-    unsigned long omegaDot = 0;
-    unsigned long i0 = 0;
-    unsigned long e = 0;
-    unsigned long toe = 0;
-    unsigned long cis = 0;
-    unsigned long alpha0 = 0;
-    unsigned long alpha1 = 0;
-    unsigned long alpha2 = 0;
-    unsigned long alpha3 = 0;
-    unsigned long beta0 = 0;
-    unsigned long beta1 = 0;
-    unsigned long beta2 = 0;
-    unsigned long beta3 = 0;
-    unsigned long dn = 0;
-    unsigned long deltaTls = 0;
-    unsigned long deltaTlsf = 0;
-    unsigned long a0 = 0;
-    unsigned long a1 = 0;
-    unsigned long tot = 0;
-    unsigned long wnt = 0;
-    unsigned long wnlsf = 0;
-    unsigned long toa = 0;
-    unsigned long wna = 0;
+// Return a long representing the x multiples of "scale factor" required to express the original double.
+// (This is the technique used in the GPS spec to encode doubles in the navmessage)
+long scaleDouble(double operand, double scaleFactorIndex) {
+    double scaleFactor = powf(2, scaleFactorIndex);
+    return (long)(operand / scaleFactor);
+}
+
+void generateNAVFrameBoilerplate(unsigned long frame[SUBFRAME_COUNT][WORD_COUNT], eph_t* ephemeris) {
+    // TODO: Populate missing fields (those that are not provided by eph_t)
+    // TODO: toc needs regular updating (currently fixed value)?
+    // TODO: Fix timing issues (wn, tow)
+
+    // *** SUBFRAME 1 PARAMETERS ***
+    // NOTES:
+    // 1. (unsigned) cast required to resolve odd behaviour where compiler was treating 
+    //    unsigned long as long during later right-shift operations.
+    unsigned long l2Code     = (unsigned)(ephemeris->code                                    & BITMASK(2));
+    unsigned long l2flag     = (unsigned)(ephemeris->flag                                    & BITMASK(1));
+    unsigned long svAccuracy = (unsigned)(ephemeris->sva                                     & BITMASK(4));
+    unsigned long svHealth   = (unsigned)(ephemeris->svh                                     & BITMASK(6));
+    unsigned long iodc       = (unsigned)(ephemeris->iodc                                    & BITMASK(10));
+    unsigned long tgd        = (unsigned)(scaleDouble(ephemeris->tgd[0],                -31) & BITMASK(8));
+    unsigned long toc        = (unsigned)(scaleDouble(time2gpst(ephemeris->toc, NULL),    4) & BITMASK(16));
+    unsigned long af2        = (unsigned)(scaleDouble(ephemeris->f2,                    -55) & BITMASK(8));
+    unsigned long af1        = (unsigned)(scaleDouble(ephemeris->f1,                    -43) & BITMASK(16));
+    unsigned long af0        = (unsigned)(scaleDouble(ephemeris->f0,                    -31) & BITMASK(22));
+
+    // *** EPHEMERIS PARAMETERS ***
+    // NOTES:
+    // 1. Some values divided by PI to convert from radians to semicircles. Navmessages use
+    //    the semicircle unit however the RINEX format (which the supplied ephemeris is in)
+    //    stipulates radians be used instead.
+    // 2. (unsigned) cast required to resolve odd behaviour where compiler was treating 
+    //    unsigned long as long during later right-shift operations.
+    unsigned long iode       = (unsigned)(ephemeris->iode                                    & BITMASK(8));
+    unsigned long crs        = (unsigned)(scaleDouble(ephemeris->crs,                    -5) & BITMASK(16));
+    unsigned long deltaN     = (unsigned)(scaleDouble((ephemeris->deln / PI),           -43) & BITMASK(16));
+    unsigned long m0         = (unsigned)(scaleDouble((ephemeris->M0 / PI),             -31) & BITMASK(32));
+    unsigned long cuc        = (unsigned)(scaleDouble(ephemeris->cuc,                   -29) & BITMASK(16));
+    unsigned long e          = (unsigned)(scaleDouble(ephemeris->e,                     -33) & BITMASK(32));
+    unsigned long cus        = (unsigned)(scaleDouble(ephemeris->cus,                   -29) & BITMASK(16));
+    unsigned long sqrtA      = (unsigned)(scaleDouble(sqrt(ephemeris->A),               -19) & BITMASK(32));
+    unsigned long toe        = (unsigned)(scaleDouble(time2gpst(ephemeris->toe, NULL),    4) & BITMASK(16));
+    unsigned long cic        = (unsigned)(scaleDouble(ephemeris->cic,                   -29) & BITMASK(16));
+    unsigned long omega0     = (unsigned)(scaleDouble((ephemeris->OMG0 / PI),           -31) & BITMASK(32));
+    unsigned long cis        = (unsigned)(scaleDouble(ephemeris->cis,                   -29) & BITMASK(16));
+    unsigned long i0         = (unsigned)(scaleDouble((ephemeris->i0 / PI),             -31) & BITMASK(32));
+    unsigned long crc        = (unsigned)(scaleDouble(ephemeris->crc,                    -5) & BITMASK(16));
+    unsigned long omega      = (unsigned)(scaleDouble((ephemeris->omg / PI),            -31) & BITMASK(32));
+    unsigned long omegaDot   = (unsigned)(scaleDouble((ephemeris->OMGd / PI),           -43) & BITMASK(24));
+    unsigned long idot       = (unsigned)(scaleDouble((ephemeris->idot / PI),           -43) & BITMASK(14));
+
+    // *** IONOSPHERIC PARAMETERS ***
+    // TODO: Correct these
+    unsigned long alpha0     = 0;
+    unsigned long alpha1     = 0;
+    unsigned long alpha2     = 0;
+    unsigned long alpha3     = 0;
+    unsigned long beta0      = 0;
+    unsigned long beta1      = 0;
+    unsigned long beta2      = 0;
+    unsigned long beta3      = 0;
+
+    // *** UTC PARAMETERS ***
+    // TODO: Correct these
+    unsigned long a0         = 0;
+    unsigned long a1         = 0;
+    unsigned long deltaTls   = 0;
+    unsigned long tot        = 0;
+    unsigned long wnt        = 0;
+    unsigned long wnlsf      = 0;
+    unsigned long dn         = 0;
+    unsigned long deltaTlsf  = 0;
+
+    // *** ALMANAC PARAMETERS ***
+    // TODO: Correct these
+    unsigned long toa        = 0;
+    unsigned long wna        = 0;
 
     // NOTES:
     // 1. Parity bits computed and populated later for all words
@@ -143,11 +176,10 @@ void generateNAVFrameBoilerplate(unsigned long frame[SUBFRAME_COUNT][WORD_COUNT]
     // *** SUBFRAME 1 ***
     // NOTES:
     // 1. Transmission Week Number populated later
-    // 2. Assuming URA < 3m until someone suggests otherwise
-    // 3. IODC >> 8 in order to extract just the two MSBs
-    frame[0][2] = (l2InPhaseCode << 18) | (URA_INDEX_3M << 14) | (svHealth << 8) | ((iodc >> 8) << 6);
+    // 2. IODC >> 8 in order to extract just the two MSBs
+    frame[0][2] = (l2Code << 18) | (svAccuracy << 14) | (svHealth << 8) | ((iodc >> 8) << 6);
 
-    frame[0][3] = (l2InPhasePCodeDataFlag << 29);
+    frame[0][3] = (l2flag << 29);
     frame[0][4] = (0UL);
     frame[0][5] = (0UL);
     frame[0][6] = (tgd << 6);
@@ -208,6 +240,13 @@ void generateNAVFrameBoilerplate(unsigned long frame[SUBFRAME_COUNT][WORD_COUNT]
     // 3. Presuming that at least one page must be provided for subframe 5?
     // 4. Not bothering with anything other than the almanac time stuff (again, inspired by gps-sdr-sim)
 	frame[4][2] = (LNAV_DATA_STRUCTURE_ID << 28) | (SUBFRAME_5_PAGE_25_ID << 22) | (toa << 14) | (wna << 6);
+
+    // Mask-off MSBs outside the 30 bit word boundaries (causes issues with parity calculation if not done)
+    for (int subframe = 0; subframe < 5; subframe++) {
+        for (int word = 0; word < 10; word++) {
+            frame[subframe][word] &= BITMASK(30);
+        }
+    }
 }
 
 // The following was script-kiddied from here: https://stackoverflow.com/questions/109023/count-the-number-of-set-bits-in-a-32-bit-integer
@@ -393,7 +432,7 @@ void printNavmessage(unsigned long frame[SUBFRAME_COUNT][WORD_COUNT]) {
     }
 }
 
-void simulate(void (*dumpCallback)(short*, int)) {
+void simulate(void (*dumpCallback)(short*, int), eph_t* ephemerides) {
     Channel channels[CHANNEL_COUNT];
     short iqBuffer[IQ_BUFFER_SIZE];
 
@@ -403,14 +442,14 @@ void simulate(void (*dumpCallback)(short*, int)) {
         SV sv;
 
         sv.prn = (i + 1);
+        sv.wn = (ephemerides + i)->week;
 
-        generateNAVFrameBoilerplate(sv.navFrameBoilerPlate);
+        generateNAVFrameBoilerplate(sv.navFrameBoilerPlate, (ephemerides + i));
         memcpy(sv.navFrame, sv.navFrameBoilerPlate, sizeof(sv.navFrameBoilerPlate));
         generateNAVFrame(&(sv.wn), &(sv.tow), &(sv.previousWord), sv.navFrame);
         generateCACodeSequence(sv.caCodeSequence, sv.prn);
 
         channel.sv = sv;
-        
         channels[i] = channel;
     }
 
