@@ -11,12 +11,17 @@
 - [x] Implement command line argument parsing
 - [x] Implement RTKLIB
 - [x] Implement RINEX file parsing
-- [ ] Populate navmessages with values from supplied RINEX file
-- [ ] Get all the navmessage terms formatted correctly
-- [ ] Align sv time with simulation time
-- [ ] Which satellites visible?
-- [ ] Calculate visible satellite distances to receiver
-- [ ] Calculate visbile satellite attenuations + phase angle
+- [x] Populate navmessages with values from supplied RINEX file
+- [x] Get all the navmessage terms formatted correctly
+- [x] Populate the navmessages of the svs correctly
+- [x] Align sv time with simulation time
+- [ ] Determine sv positions n simulation
+- [ ] Determine if SVs are visible or not
+- [ ] Implement SV tracking logic
+
+- [ ] Calculate sv code phases
+- [ ] Calculate sv phase angles
+- [ ] Calculate sv attenuations
 
 ## Notes:
 * Had to move ```range``` and ```geoid``` variables from bottom to top of file in rtklib's ```geoid.c``` to get it to compile (those variables initiated twice otherwise). Not sure how anyone else gets away with compiling that

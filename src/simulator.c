@@ -86,7 +86,6 @@ long scaleDouble(double operand, double scaleFactorIndex) {
 void generateNAVFrameBoilerplate(unsigned long frame[SUBFRAME_COUNT][WORD_COUNT], eph_t* ephemeris) {
     // TODO: Populate missing fields (those that are not provided by eph_t)
     // TODO: toc needs regular updating (currently fixed value)?
-    // TODO: Fix timing issues (wn, tow)
 
     // *** SUBFRAME 1 PARAMETERS ***
     // NOTES:
@@ -320,17 +319,33 @@ void computeParity(unsigned long* word, unsigned long* previousWord, unsigned sh
 
     D &= 0x3FFFFFFFUL;
 
-    *word = *previousWord = D;
+    *previousWord = D;
+    *word = D;
 }
 
-void generateNAVFrame(unsigned long* wn, unsigned long* tow, unsigned long* previousWord, unsigned long frame[SUBFRAME_COUNT][WORD_COUNT]) {
+void generateNAVFrame(gtime_t initalTime, unsigned long* previousWord, unsigned long frame[SUBFRAME_COUNT][WORD_COUNT], bool init) {
+    int wn;
+    double tow = time2gpst(initalTime, &wn);
+
+    // Mask Week Number to 10 bits (Ref: IS-GPS-200N: 3.3.4 GPS Time and SV Z-Count)
+    unsigned long navmessageWn = wn & BITMASK(10);
+
+    unsigned long navmessageTow;
+
     // The last word of the previous frame is required to generate the parity bits for this frame.
-    // Therefore, we must generate the last word of the previous frame if one is not available (occurs on the first call).
-    if (*previousWord == 0) {
+    // We must generate the last word of the previous frame if one is not available (occurs on init).
+    if (init) {
+        // Rewind TOW one subframe to generate this at the correct time
+        tow -= SUBFRAME_DURATION_S;
+
+        // "tow" is scaled then masked to 19 bits (Ref: IS-GPS-200N: 3.3.4 GPS Time and SV Z-Count)
+        navmessageTow = (unsigned)(tow / TOW_RESOLUTION_S) & BITMASK(19);
+
         for (short word = 0; word < WORD_COUNT; word++) {
-            // Add Time Of Week into HOW (2nd word of subframe).
-            if (word == 1) {
-                frame[4][word] |= ((*tow & 0x1FFFFUL) << 13);
+            // Insert TOW into the HOW (2nd word of subframe).
+			if (word == 1) {
+                // Only want the 17 MSBs of "navmessageTow" (Ref: IS-GPS-200N: 20.3.3.2 Handover Word (HOW))
+                frame[4][word] |= ((navmessageTow >> 2) << 13);
             }
             
             // solveNibs = "true" when looking at either the 2nd or 10th word.
@@ -339,18 +354,22 @@ void generateNAVFrame(unsigned long* wn, unsigned long* tow, unsigned long* prev
     }
 
     for (short subframe = 0; subframe < SUBFRAME_COUNT; subframe++) {
-        // Increment the TOW between frames.
-        ++*tow;
+        // Increment the TOW between subframes.
+        tow += SUBFRAME_DURATION_S;
+
+        // "tow" is scaled then masked to 19 bits (Ref: IS-GPS-200N: 3.3.4 GPS Time and SV Z-Count)
+        navmessageTow = (unsigned)(lround(tow / TOW_RESOLUTION_S) & BITMASK(19));
 
         for (short word = 0; word < WORD_COUNT; word++) {
             // Add Transmission Week Number to the third word of subframe one.
 			if ((subframe == 0) && (word == 2)) {
-                frame[subframe][word] |= (*wn & 0x3FFUL) << 20;
+                frame[subframe][word] |= (navmessageWn << 20);
             }
 
 			// Insert TOW into the HOW (2nd word of subframe).
 			if (word == 1) {
-                frame[subframe][word] |= ((*tow & 0x1FFFFUL) << 13);
+                // Only want the 17 MSBs of "navmessageTow" (Ref: IS-GPS-200N: 20.3.3.2 Handover Word (HOW))
+                frame[subframe][word] |= ((navmessageTow >> 2) << 13);
             }
             
             // solveNibs = "true" when looking at either the 2nd or 10th word.
@@ -432,9 +451,17 @@ void printNavmessage(unsigned long frame[SUBFRAME_COUNT][WORD_COUNT]) {
     }
 }
 
-void simulate(void (*dumpCallback)(short*, int), eph_t* ephemerides) {
+void simulate(void (*dumpCallback)(short*, int), eph_t* ephemerides, short svCount) {
     Channel channels[CHANNEL_COUNT];
     short iqBuffer[IQ_BUFFER_SIZE];
+
+    // Get week number from toe of the first ephemeris
+    int wn;
+    time2gpst(ephemerides->toe, &wn);
+
+    // TODO: Allow user to specify simulation start time and handle this properly in generateNAVFrame()
+    gtime_t simulationTime = gpst2time(wn, 6);
+    gtime_t simulationEndTime = timeadd(simulationTime, SAMPLE_DURATION_S);
 
     // Setup transmit channels
     for (char i = 0; i < CHANNEL_COUNT; i++) {
@@ -442,20 +469,26 @@ void simulate(void (*dumpCallback)(short*, int), eph_t* ephemerides) {
         SV sv;
 
         sv.prn = (i + 1);
-        sv.wn = (ephemerides + i)->week;
+        sv.wn = wn;
+
+        // Set the ephemeris to the simulation start time (ensures the simulation time is ahead of the last reported ephemeris time)
+        (ephemerides + i)->toe = simulationTime;
+
+        // "The toe shall be equal to the toc of the same LNAV CEI data set" (Ref: 20.3.4.4 Data Sets)
+        (ephemerides + i)->toc = (ephemerides + i)->toe;
 
         generateNAVFrameBoilerplate(sv.navFrameBoilerPlate, (ephemerides + i));
         memcpy(sv.navFrame, sv.navFrameBoilerPlate, sizeof(sv.navFrameBoilerPlate));
-        generateNAVFrame(&(sv.wn), &(sv.tow), &(sv.previousWord), sv.navFrame);
+        generateNAVFrame(simulationTime, &(sv.previousWord), sv.navFrame, true);
         generateCACodeSequence(sv.caCodeSequence, sv.prn);
 
         channel.sv = sv;
         channels[i] = channel;
     }
 
-    double elapsedSimulationTime_s = 0;
-
-    while (elapsedSimulationTime_s < SAMPLE_DURATION_S) {
+    // Perform simulation!
+    while (timediff(simulationEndTime, simulationTime) > 0) {
+        // Fill sample window IQ buffer
         for (int i = 0; i < IQ_BUFFER_SIZE; i += 2) {
             short iAccumulated = 0;
             short qAccumulated = 0;
@@ -478,7 +511,7 @@ void simulate(void (*dumpCallback)(short*, int), eph_t* ephemerides) {
                     channels[channel].caChipPointer -= CA_CODE_SEQUENCE_LENGTH;
                     channels[channel].caCycleCount++;
 
-                    if (channels[channel].caCycleCount >= CA_CHIPS_PER_NAV_BIT) {
+                    if (channels[channel].caCycleCount >= CA_CYCLES_PER_NAV_BIT) {
                         channels[channel].caCycleCount = 0;
                         channels[channel].navBitPointer++;
                         
@@ -488,7 +521,7 @@ void simulate(void (*dumpCallback)(short*, int), eph_t* ephemerides) {
 
                             // Generate the next NAV frame!
                             memcpy(channels[channel].sv.navFrame, channels[channel].sv.navFrameBoilerPlate, sizeof(channels[channel].sv.navFrameBoilerPlate));
-                            generateNAVFrame(&(channels[channel].sv.wn), &(channels[channel].sv.tow), &(channels[channel].sv.previousWord), channels[channel].sv.navFrame);
+                            generateNAVFrame(simulationTime, &(channels[channel].sv.previousWord), channels[channel].sv.navFrame, false);
                         }
 
                         // Get the next NAV frame bit
@@ -504,7 +537,7 @@ void simulate(void (*dumpCallback)(short*, int), eph_t* ephemerides) {
             iqBuffer[i] = iAccumulated;
             iqBuffer[i + 1] = qAccumulated;
 
-            elapsedSimulationTime_s += SAMPLE_INTERVAL_S;
+            simulationTime = timeadd(simulationTime, SAMPLE_INTERVAL_S);
         }
 
         dumpCallback(iqBuffer, IQ_BUFFER_SIZE);

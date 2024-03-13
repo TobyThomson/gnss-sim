@@ -1,6 +1,8 @@
 #ifndef H_SIMULATOR
 #define H_SIMULATOR
 
+#include <stdbool.h>
+
 // For generating bitmasks
 #define BITMASK(bits) ((1 << (bits)) - 1)
 
@@ -9,8 +11,11 @@
 #define WORD_BIT_COUNT          (30)
 
 #define CA_REGISTER_LENGTH      (10)
-#define CA_CHIPS_PER_NAV_BIT    (20)
+#define CA_CYCLES_PER_NAV_BIT   (20)
 #define CA_CODE_CHIP_DURATION_S (1.0 / 1023000.0)
+#define SUBFRAME_DURATION_S     (WORD_COUNT * WORD_BIT_COUNT * CA_CYCLES_PER_NAV_BIT * CA_CODE_SEQUENCE_LENGTH * CA_CODE_CHIP_DURATION_S)
+#define SECONDS_IN_WEEK         (60 * 60 * 24 * 7)
+#define TOW_RESOLUTION_S        (1.5)
 
 #define CA_CODE_SEQUENCE_LENGTH (1023)
 
@@ -65,6 +70,7 @@ typedef struct {
 	unsigned short prn;
     unsigned long wn;
     unsigned long tow;
+    bool initialized;
 } SV;
 
 typedef struct {
@@ -75,6 +81,6 @@ typedef struct {
     short navBit;
 } Channel;
 
-void simulate(void (*dumpCallback)(short*, int), eph_t* ephemerides);
+void simulate(void (*dumpCallback)(short*, int), eph_t* ephemerides, short svCount);
 
 #endif

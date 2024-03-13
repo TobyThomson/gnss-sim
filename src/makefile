@@ -4,7 +4,7 @@ SRC_FILES := $(wildcard $(SRC_DIR)/*.c)
 
 INC_DIRS := ../include ../libs/rtklib-2.4.3/src
 RTKLIB_DIR := ../libs/rtklib-2.4.3/src
-RTKLIB_FILES := rinex.c rtkcmn.c
+RTKLIB_FILES := rinex.c rtkcmn.c ephemeris.c preceph.c sbas.c
 RTKLIB_FILES := $(addprefix $(RTKLIB_DIR)/,$(RTKLIB_FILES))
 
 BUILD_DIR := ../build

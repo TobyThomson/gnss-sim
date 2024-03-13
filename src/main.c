@@ -192,7 +192,7 @@ int main(int argc, char *argv[]) {
     if (outputFilename) {
         printf("WRITING DATA TO FILE...\n");
         OutputFile = fopen(outputFilename, "wb");
-        simulate(filePtr, Ephemerides);
+        simulate(filePtr, Ephemerides, GPS_SV_COUNT);
         fclose(OutputFile);
     }
 
@@ -204,7 +204,7 @@ int main(int argc, char *argv[]) {
         // Sleep to give subscriber time to connect
         sleep(1);
 
-        simulate(socketPtr, Ephemerides);
+        simulate(socketPtr, Ephemerides, GPS_SV_COUNT);
 
         // Sleep to give subscriber time to collect
         sleep(1);
