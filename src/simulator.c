@@ -2,6 +2,7 @@
 #include <string.h>
 #include <math.h>
 
+#include "../libs/progressbar/progressbar.h"
 #include "../libs/rtklib-2.4.3/src/rtklib.h"
 
 #include "../include/simulator.h"
@@ -606,6 +607,10 @@ void simulate(void (*dumpCallback)(short*, int), eph_t* ephemerides, short svCou
         channels[i] = channel;
     }
 
+    // Create progress bar
+    unsigned long steps = (SAMPLE_DURATION_S / IQ_SAMPLE_WINDOW_S);
+    progressbar *progress = progressbar_new("GENERATING IQ DATA...", steps);
+
     // Perform simulation!
     while (timediff(simulationEndTime, simulationTime) > 0) {
         // TODO: Add this functionality
@@ -685,5 +690,9 @@ void simulate(void (*dumpCallback)(short*, int), eph_t* ephemerides, short svCou
         }
 
         dumpCallback(iqBuffer, IQ_BUFFER_SIZE);
+
+        progressbar_inc(progress);
     }
+
+    progressbar_finish(progress);
 }
