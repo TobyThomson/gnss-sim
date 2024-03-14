@@ -548,6 +548,15 @@ void updateChannelAllocations(gtime_t time, Channel channels[CHANNEL_COUNT], SV*
     free(rankedSvs);
 }
 
+// TODO: Allow user to specify reciever position somehow
+void updateRecieverPosition(double* receiverPosition_llh, double* receiverPosition_ecef) {
+    // Convert latitude and longitude in degrees to radians
+    receiverPosition_llh[0] *= (PI / 180);
+    receiverPosition_llh[1] *= (PI / 180);
+
+    pos2ecef(receiverPosition_llh, receiverPosition_ecef);
+}
+
 void simulate(void (*dumpCallback)(short*, int), eph_t* ephemerides, short svCount) {
     SV svs[svCount];
     Channel channels[CHANNEL_COUNT];
@@ -555,17 +564,6 @@ void simulate(void (*dumpCallback)(short*, int), eph_t* ephemerides, short svCou
 
     // TODO: Would be nice if this was a pointer array. Change? (Difficulty introduced by "updateSatellitePositons" usage)
     SV visibleSvs[CHANNEL_COUNT];
-
-    // TODO: Allow user to specify reciever position
-    // For now, position reciever at the University of Leeds, School of Electronic and Electrical Engineering
-    double receiverPosition_llh[3] = { 53.8096268, -1.5553807, 100.0 };
-
-    // Convert latitude and longitude in degrees to radians
-    receiverPosition_llh[0] *= (PI / 180);
-    receiverPosition_llh[1] *= (PI / 180);
-
-    double receiverPosition_ecef[3];
-    pos2ecef(receiverPosition_llh, receiverPosition_ecef);
 
     // Get week number from toe of the first ephemeris
     int wn;
@@ -575,6 +573,10 @@ void simulate(void (*dumpCallback)(short*, int), eph_t* ephemerides, short svCou
     gtime_t simulationTime = gpst2time(wn, 6);
     gtime_t simulationEndTime = timeadd(simulationTime, SAMPLE_DURATION_S);
     gtime_t visibilityUpdateTime = simulationTime;
+
+    // Coordinates are for University of Leeds, School of Electronic and Electrical Engineering
+    double receiverPosition_llh[3] = { 53.8096268, -1.5553807, 5.0 };
+    double receiverPosition_ecef[3];
 
     // Setup satellites
     for (char i = 0; i < svCount; i++) {
@@ -613,8 +615,7 @@ void simulate(void (*dumpCallback)(short*, int), eph_t* ephemerides, short svCou
 
     // Perform simulation!
     while (timediff(simulationEndTime, simulationTime) > 0) {
-        // TODO: Add this functionality
-        // updateRecieverPosition();
+        updateRecieverPosition(receiverPosition_llh, receiverPosition_ecef);
 
         // Decide if it's time to update which satellites are in view
         if (timediff(visibilityUpdateTime, simulationTime) <= 0) {
