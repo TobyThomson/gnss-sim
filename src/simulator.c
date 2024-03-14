@@ -85,7 +85,6 @@ long scaleDouble(double operand, double scaleFactorIndex) {
 
 void generateNAVFrameBoilerplate(unsigned long frame[SUBFRAME_COUNT][WORD_COUNT], eph_t* ephemeris) {
     // TODO: Populate missing fields (those that are not provided by eph_t)
-    // TODO: toc needs regular updating (currently fixed value)?
 
     // *** SUBFRAME 1 PARAMETERS ***
     // NOTES:
@@ -451,9 +450,121 @@ void printNavmessage(unsigned long frame[SUBFRAME_COUNT][WORD_COUNT]) {
     }
 }
 
+// TODO: Just use dot product of pointing vector and normal vector instead?
+void calculateAngularDistance(double* satellitePosition_ecef, double* receiverPosition_ecef, float* receiverAngularDistance_rad) {
+    double lineOfSightVector_ecef[3];
+    double receiverPosition_llh[3];
+    double azimuthElevation_rad[2];
+
+    geodist(satellitePosition_ecef, receiverPosition_ecef, lineOfSightVector_ecef);
+    ecef2pos(receiverPosition_ecef, receiverPosition_llh);
+    satazel(receiverPosition_llh, lineOfSightVector_ecef, azimuthElevation_rad);
+
+    // Using a simplified version of the formula from here: https://math.stackexchange.com/questions/2904702/finding-the-angle-between-two-points-given-their-azimuth-and-elevation-angles
+    // Assuming that El1 is pi/2 and Az1 is 0 (center of the sky)
+    *receiverAngularDistance_rad = acos(sin(azimuthElevation_rad[1]));
+}
+
+void updateSatellitePositons(gtime_t time, SV* svs, short svCount, double* receiverPosition_ecef) {
+    for (int sv = 0; sv < svCount; sv++) {
+        eph2pos(time, &svs[sv].ephemeris, svs[sv].position_ecef, &svs[sv].clockBias_s, &svs[sv].variance);
+        calculateAngularDistance(svs[sv].position_ecef, receiverPosition_ecef, &svs[sv].recieverAngularDistance_rad);
+    }
+}
+
+int compareSatelliteVisibility(const void *p1, const void *p2) {
+    const SV *q1 = *(const SV **)p1;
+    const SV *q2 = *(const SV **)p2;
+
+    // Sort in descending order of distance from sky center
+    if (q1->recieverAngularDistance_rad > q2->recieverAngularDistance_rad) return 1;
+    if (q1->recieverAngularDistance_rad < q2->recieverAngularDistance_rad) return -1;
+    return 0;
+}
+
+void updateChannelAllocations(gtime_t time, Channel channels[CHANNEL_COUNT], SV* svs, short svCount, double* receiverPosition_ecef) {
+    // Determine all sv positions
+    updateSatellitePositons(time, svs, svCount, receiverPosition_ecef);
+
+    // Create array of pointers to SV elements for ranking
+    SV** rankedSvs = (SV**)malloc(svCount * sizeof(*rankedSvs));
+
+    for (int i = 0; i < svCount; i++) {
+        rankedSvs[i] = svs + i;
+    }
+
+    // Rank satellites by distance from the receiver's sky center
+    qsort(rankedSvs, svCount, sizeof(SV*), compareSatelliteVisibility);
+
+    // First pass to unassign select channels and remove allocated satellites from "rankedSvs"
+    for (int channel = 0; channel < CHANNEL_COUNT; channel++) {
+        bool visible = false;
+
+        // Only proceed if a satellite is assigned (i.e. skip on init)
+        if (channels[channel].sv) {
+            for (int sv = 0; sv < svCount; sv++) {
+                if (rankedSvs[sv]->prn == channels[channel].sv->prn) {
+                    visible = true;
+                }
+            }
+
+            if (visible) {
+                // Remove assigned satellite from the avalible options presented by the "rankedSvs" list
+                int i, pos, num;
+
+                for (i = pos - 1; i < num -1; i++) {  
+                    rankedSvs[i] = rankedSvs[i+1];
+                } 
+            }
+
+            else {
+                // Unassign the satellite from this channel. Channel will need reassigning later
+                channels[channel].sv = NULL;
+            }
+        }
+    }
+
+    // Second pass to reassign select channels and remove allocated satellites from "rankedSvs"
+    for (int channel = 0; channel < CHANNEL_COUNT; channel++) {
+        // If channel is in need of reassignment...
+        if (!channels[channel].sv) {
+            // Assign the most visible satellite in the rankedSvs list
+            channels[channel].sv = rankedSvs[0];
+
+            // Remove assigned satellite from the avalible options presented by the "rankedSvs" list
+            int i, pos, num;
+
+            for (i = pos - 1; i < num -1; i++) {  
+                rankedSvs[i] = rankedSvs[i+1];
+            }
+
+            // Generate initial navframe
+            // TODO: Store more of this information in the channel struct rather than the sv struct?
+            generateNAVFrame(time, &channels[channel].sv->previousWord, channels[channel].sv->navFrame, true);
+        }
+    }
+
+    free(rankedSvs);
+}
+
 void simulate(void (*dumpCallback)(short*, int), eph_t* ephemerides, short svCount) {
+    SV svs[svCount];
     Channel channels[CHANNEL_COUNT];
     short iqBuffer[IQ_BUFFER_SIZE];
+
+    // TODO: Would be nice if this was a pointer array. Change? (Difficulty introduced by "updateSatellitePositons" usage)
+    SV visibleSvs[CHANNEL_COUNT];
+
+    // TODO: Allow user to specify reciever position
+    // For now, position reciever at the University of Leeds, School of Electronic and Electrical Engineering
+    double receiverPosition_llh[3] = { 53.8096268, -1.5553807, 100.0 };
+
+    // Convert latitude and longitude in degrees to radians
+    receiverPosition_llh[0] *= (PI / 180);
+    receiverPosition_llh[1] *= (PI / 180);
+
+    double receiverPosition_ecef[3];
+    pos2ecef(receiverPosition_llh, receiverPosition_ecef);
 
     // Get week number from toe of the first ephemeris
     int wn;
@@ -462,32 +573,65 @@ void simulate(void (*dumpCallback)(short*, int), eph_t* ephemerides, short svCou
     // TODO: Allow user to specify simulation start time and handle this properly in generateNAVFrame()
     gtime_t simulationTime = gpst2time(wn, 6);
     gtime_t simulationEndTime = timeadd(simulationTime, SAMPLE_DURATION_S);
+    gtime_t visibilityUpdateTime = simulationTime;
 
-    // Setup transmit channels
-    for (char i = 0; i < CHANNEL_COUNT; i++) {
-        Channel channel;
+    // Setup satellites
+    for (char i = 0; i < svCount; i++) {
         SV sv;
 
+        // TODO: Fix this!
         sv.prn = (i + 1);
-        sv.wn = wn;
+
+        // Set satellite ephemeris
+        sv.ephemeris = *(ephemerides + i);
 
         // Set the ephemeris to the simulation start time (ensures the simulation time is ahead of the last reported ephemeris time)
-        (ephemerides + i)->toe = simulationTime;
+        sv.ephemeris.toe = simulationTime;
 
         // "The toe shall be equal to the toc of the same LNAV CEI data set" (Ref: 20.3.4.4 Data Sets)
-        (ephemerides + i)->toc = (ephemerides + i)->toe;
+        sv.ephemeris.toc = (ephemerides + i)->toe;
 
-        generateNAVFrameBoilerplate(sv.navFrameBoilerPlate, (ephemerides + i));
+        // Generate miscellaneous data
+        generateNAVFrameBoilerplate(sv.navFrameBoilerPlate, &sv.ephemeris);
         memcpy(sv.navFrame, sv.navFrameBoilerPlate, sizeof(sv.navFrameBoilerPlate));
-        generateNAVFrame(simulationTime, &(sv.previousWord), sv.navFrame, true);
         generateCACodeSequence(sv.caCodeSequence, sv.prn);
 
-        channel.sv = sv;
+        svs[i] = sv;
+    }
+
+    // Setup channels
+    for (char i = 0; i < CHANNEL_COUNT; i++) {
+        Channel channel;
+        channel.sv = NULL;
         channels[i] = channel;
     }
 
     // Perform simulation!
     while (timediff(simulationEndTime, simulationTime) > 0) {
+        // TODO: Add this functionality
+        // updateRecieverPosition();
+
+        // Decide if it's time to update which satellites are in view
+        if (timediff(visibilityUpdateTime, simulationTime) <= 0) {
+            updateChannelAllocations(simulationTime, channels, svs, svCount, receiverPosition_ecef);
+
+            // Update "visibleSvs" for later updates
+            for (int i = 0; i < CHANNEL_COUNT; i++) {
+                visibleSvs[i] = *channels[i].sv;
+            }
+
+            // Stage the next visibility update
+            visibilityUpdateTime = timeadd(visibilityUpdateTime, VISIBILITY_UPDATE_INTERVAL_S);
+        }
+
+        // ...otherwise just update the visible satellite positions
+        else {
+            updateSatellitePositons(simulationTime, visibleSvs, CHANNEL_COUNT, receiverPosition_ecef);
+        }
+
+        // TODO: Add this functionality
+        // calculatePsuedoranges();
+
         // Fill sample window IQ buffer
         for (int i = 0; i < IQ_BUFFER_SIZE; i += 2) {
             short iAccumulated = 0;
@@ -495,7 +639,7 @@ void simulate(void (*dumpCallback)(short*, int), eph_t* ephemerides, short svCou
 
             for (char channel = 0; channel < CHANNEL_COUNT; channel++) {
                 // Get the appropriate C/A Code bit (may not have changed since last iteration)
-                char caCodeChip = channels[channel].sv.caCodeSequence[(int)channels[channel].caChipPointer];
+                char caCodeChip = channels[channel].sv->caCodeSequence[(int)channels[channel].caChipPointer];
 
                 // TODO: Generate this properly
                 short phase = 0;
@@ -520,8 +664,8 @@ void simulate(void (*dumpCallback)(short*, int), eph_t* ephemerides, short svCou
                             channels[channel].navBitPointer = 0;
 
                             // Generate the next NAV frame!
-                            memcpy(channels[channel].sv.navFrame, channels[channel].sv.navFrameBoilerPlate, sizeof(channels[channel].sv.navFrameBoilerPlate));
-                            generateNAVFrame(simulationTime, &(channels[channel].sv.previousWord), channels[channel].sv.navFrame, false);
+                            memcpy(channels[channel].sv->navFrame, channels[channel].sv->navFrameBoilerPlate, sizeof(channels[channel].sv->navFrameBoilerPlate));
+                            generateNAVFrame(simulationTime, &(channels[channel].sv->previousWord), channels[channel].sv->navFrame, false);
                         }
 
                         // Get the next NAV frame bit
@@ -529,7 +673,7 @@ void simulate(void (*dumpCallback)(short*, int), eph_t* ephemerides, short svCou
                         short word = (channels[channel].navBitPointer % (WORD_COUNT * WORD_BIT_COUNT)) / WORD_BIT_COUNT;
                         short bit = channels[channel].navBitPointer % WORD_BIT_COUNT;
 
-                        channels[channel].navBit = (channels[channel].sv.navFrame[subframe][word] >> (29 - bit)) & 0x1;
+                        channels[channel].navBit = (channels[channel].sv->navFrame[subframe][word] >> (29 - bit)) & 0x1;
                     }
                 }
             }

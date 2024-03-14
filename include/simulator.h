@@ -53,6 +53,7 @@
 #define SUBFRAME_4_PAGE_18_ID   (56UL) // (Ref: )
 #define SUBFRAME_5_PAGE_25_ID   (51UL) // (Ref: )
 
+#define VISIBILITY_UPDATE_INTERVAL_S (15.0)
 #define SAMPLE_FREQUENCY_MSPS   (2.5)
 #define SAMPLE_DURATION_S       (65.0)
 #define SAMPLE_INTERVAL_S       (1.0 / (SAMPLE_FREQUENCY_MSPS * 1000000.0))
@@ -67,14 +68,19 @@ typedef struct {
     unsigned long navFrameBoilerPlate[SUBFRAME_COUNT][WORD_COUNT];
 	unsigned long navFrame[SUBFRAME_COUNT][WORD_COUNT];
 	unsigned long previousWord;
-	unsigned short prn;
-    unsigned long wn;
-    unsigned long tow;
+
     bool initialized;
+
+	unsigned short prn;
+    eph_t ephemeris;
+    double position_ecef[3];
+    float recieverAngularDistance_rad;
+    double clockBias_s;
+    double variance;
 } SV;
 
 typedef struct {
-	SV sv;
+	SV* sv;
 	int navBitPointer;
     double caChipPointer;
     short caCycleCount;
