@@ -466,10 +466,10 @@ void calculateAngularDistance(double* satellitePosition_ecef, double* receiverPo
     *receiverAngularDistance_rad = acos(sin(azimuthElevation_rad[1]));
 }
 
-void updateSatellitePositons(gtime_t time, SV* svs, short svCount, double* receiverPosition_ecef) {
+void updateSatellitePositons(gtime_t time, SV** svs, short svCount, double* receiverPosition_ecef) {
     for (int sv = 0; sv < svCount; sv++) {
-        eph2pos(time, &svs[sv].ephemeris, svs[sv].position_ecef, &svs[sv].clockBias_s, &svs[sv].variance);
-        calculateAngularDistance(svs[sv].position_ecef, receiverPosition_ecef, &svs[sv].recieverAngularDistance_rad);
+        eph2pos(time, &svs[sv]->ephemeris, svs[sv]->position_ecef, &svs[sv]->clockBias_s, &svs[sv]->variance);
+        calculateAngularDistance(svs[sv]->position_ecef, receiverPosition_ecef, &svs[sv]->recieverAngularDistance_rad);
     }
 }
 
@@ -483,69 +483,22 @@ int compareSatelliteVisibility(const void *p1, const void *p2) {
     return 0;
 }
 
-void updateChannelAllocations(gtime_t time, Channel channels[CHANNEL_COUNT], SV* svs, short svCount, double* receiverPosition_ecef) {
+void updateChannelAllocations(gtime_t time, Channel channels[CHANNEL_COUNT], SV** svs, short svCount, double* receiverPosition_ecef) {
     // Determine all sv positions
     updateSatellitePositons(time, svs, svCount, receiverPosition_ecef);
 
-    // Create array of pointers to SV elements for ranking
-    SV** rankedSvs = (SV**)malloc(svCount * sizeof(*rankedSvs));
-
-    for (int i = 0; i < svCount; i++) {
-        rankedSvs[i] = svs + i;
-    }
-
     // Rank satellites by distance from the receiver's sky center
-    qsort(rankedSvs, svCount, sizeof(SV*), compareSatelliteVisibility);
+    qsort(svs, svCount, sizeof(SV*), compareSatelliteVisibility);
 
-    // First pass to unassign select channels and remove allocated satellites from "rankedSvs"
-    for (int channel = 0; channel < CHANNEL_COUNT; channel++) {
-        bool visible = false;
+    // Assign satellites to channels by most to least visible
+    for (int i = 0; i < CHANNEL_COUNT; i++) {
+        // Assign the next most visible satellite in the svs list
+        channels[i].sv = svs[i];
 
-        // Only proceed if a satellite is assigned (i.e. skip on init)
-        if (channels[channel].sv) {
-            for (int sv = 0; sv < svCount; sv++) {
-                if (rankedSvs[sv]->prn == channels[channel].sv->prn) {
-                    visible = true;
-                }
-            }
-
-            if (visible) {
-                // Remove assigned satellite from the avalible options presented by the "rankedSvs" list
-                int i, pos, num;
-
-                for (i = pos - 1; i < num -1; i++) {  
-                    rankedSvs[i] = rankedSvs[i+1];
-                } 
-            }
-
-            else {
-                // Unassign the satellite from this channel. Channel will need reassigning later
-                channels[channel].sv = NULL;
-            }
-        }
+        // Generate initial navframe
+        // TODO: Store more of this information in the channel struct rather than the sv struct?
+        generateNAVFrame(time, &channels[i].sv->previousWord, channels[i].sv->navFrame, true);
     }
-
-    // Second pass to reassign select channels and remove allocated satellites from "rankedSvs"
-    for (int channel = 0; channel < CHANNEL_COUNT; channel++) {
-        // If channel is in need of reassignment...
-        if (!channels[channel].sv) {
-            // Assign the most visible satellite in the rankedSvs list
-            channels[channel].sv = rankedSvs[0];
-
-            // Remove assigned satellite from the avalible options presented by the "rankedSvs" list
-            int i, pos, num;
-
-            for (i = pos - 1; i < num -1; i++) {  
-                rankedSvs[i] = rankedSvs[i+1];
-            }
-
-            // Generate initial navframe
-            // TODO: Store more of this information in the channel struct rather than the sv struct?
-            generateNAVFrame(time, &channels[channel].sv->previousWord, channels[channel].sv->navFrame, true);
-        }
-    }
-
-    free(rankedSvs);
 }
 
 // TODO: Allow user to specify reciever position somehow
@@ -557,13 +510,31 @@ void updateRecieverPosition(double* receiverPosition_llh, double* receiverPositi
     pos2ecef(receiverPosition_llh, receiverPosition_ecef);
 }
 
+void updateChannelCodePhases(Channel channels[CHANNEL_COUNT], double* receiverPosition_ecef) {
+    // Required to keep "geodist" happy. Not used beyond that
+    double lineOfSightVector_ecef[3];
+
+    for (int channel = 0; channel < CHANNEL_COUNT; channel++) {
+        double psuedorange_m = geodist(channels[channel].sv->position_ecef, receiverPosition_ecef, lineOfSightVector_ecef);
+
+        // TODO: Work out what to do here...
+        // double transitTime_s = psuedorange_m / LIGHTSPEED;
+        // channels[channel].caCodePhase = ;
+    }
+}
+
 void simulate(void (*dumpCallback)(short*, int), eph_t* ephemerides, short svCount) {
     SV svs[svCount];
     Channel channels[CHANNEL_COUNT];
     short iqBuffer[IQ_BUFFER_SIZE];
 
-    // TODO: Would be nice if this was a pointer array. Change? (Difficulty introduced by "updateSatellitePositons" usage)
-    SV visibleSvs[CHANNEL_COUNT];
+    // Create array of pointers to SV elements for ranking satellite visibility
+    SV** rankedSvs = (SV**)malloc(svCount * sizeof(*rankedSvs));
+
+    // Populate pointer array
+    for (int i = 0; i < svCount; i++) {
+        rankedSvs[i] = &svs[i];
+    }
 
     // Get week number from toe of the first ephemeris
     int wn;
@@ -581,12 +552,10 @@ void simulate(void (*dumpCallback)(short*, int), eph_t* ephemerides, short svCou
     // Setup satellites
     for (char i = 0; i < svCount; i++) {
         SV sv;
-
-        // TODO: Fix this!
-        sv.prn = (i + 1);
-
+        
         // Set satellite ephemeris
         sv.ephemeris = *(ephemerides + i);
+        sv.prn = sv.ephemeris.sat;
 
         // Set the ephemeris to the simulation start time (ensures the simulation time is ahead of the last reported ephemeris time)
         sv.ephemeris.toe = simulationTime;
@@ -605,7 +574,14 @@ void simulate(void (*dumpCallback)(short*, int), eph_t* ephemerides, short svCou
     // Setup channels
     for (char i = 0; i < CHANNEL_COUNT; i++) {
         Channel channel;
+
         channel.sv = NULL;
+        channel.navBitPointer = 0;
+        channel.caChipPointer = 0;
+        channel.caCycleCount = 0;
+        channel.navBit = 0;
+        channel.caCodePhase = 0;
+
         channels[i] = channel;
     }
 
@@ -619,12 +595,7 @@ void simulate(void (*dumpCallback)(short*, int), eph_t* ephemerides, short svCou
 
         // Decide if it's time to update which satellites are in view
         if (timediff(visibilityUpdateTime, simulationTime) <= 0) {
-            updateChannelAllocations(simulationTime, channels, svs, svCount, receiverPosition_ecef);
-
-            // Update "visibleSvs" for later updates
-            for (int i = 0; i < CHANNEL_COUNT; i++) {
-                visibleSvs[i] = *channels[i].sv;
-            }
+            updateChannelAllocations(simulationTime, channels, rankedSvs, svCount, receiverPosition_ecef);
 
             // Stage the next visibility update
             visibilityUpdateTime = timeadd(visibilityUpdateTime, VISIBILITY_UPDATE_INTERVAL_S);
@@ -632,11 +603,11 @@ void simulate(void (*dumpCallback)(short*, int), eph_t* ephemerides, short svCou
 
         // ...otherwise just update the visible satellite positions
         else {
-            updateSatellitePositons(simulationTime, visibleSvs, CHANNEL_COUNT, receiverPosition_ecef);
+            updateSatellitePositons(simulationTime, rankedSvs, CHANNEL_COUNT, receiverPosition_ecef);
         }
 
-        // TODO: Add this functionality
-        // calculatePsuedoranges();
+        // Determine satellite-reciever distance and how this impacts the C/A code phase
+        updateChannelCodePhases(channels, receiverPosition_ecef);
 
         // Fill sample window IQ buffer
         for (int i = 0; i < IQ_BUFFER_SIZE; i += 2) {
@@ -649,7 +620,8 @@ void simulate(void (*dumpCallback)(short*, int), eph_t* ephemerides, short svCou
 
                 // TODO: Generate this properly
                 short phase = 0;
-                
+
+                // TODO: Modify these two lines to allow code phase adjustment
                 // Write I followed by Q value to the buffer
                 // "((x * 2) - 1)" maps a 0/1 value to a -1/1 value. Multiplying these remapped terms allows us to XOR them.
                 iAccumulated += ((channels[channel].navBit * 2) - 1) * ((caCodeChip * 2) - 1) * cosTable[phase];
@@ -696,4 +668,6 @@ void simulate(void (*dumpCallback)(short*, int), eph_t* ephemerides, short svCou
     }
 
     progressbar_finish(progress);
+
+    free(rankedSvs);
 }

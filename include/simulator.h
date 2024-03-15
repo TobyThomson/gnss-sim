@@ -6,6 +6,8 @@
 // For generating bitmasks
 #define BITMASK(bits) ((1 << (bits)) - 1)
 
+#define LIGHTSPEED              (2.99792458e8)
+
 #define SUBFRAME_COUNT          (5UL)
 #define WORD_COUNT              (10)
 #define WORD_BIT_COUNT          (30)
@@ -85,6 +87,7 @@ typedef struct {
     double caChipPointer;
     short caCycleCount;
     short navBit;
+    double caCodePhase;
 } Channel;
 
 void simulate(void (*dumpCallback)(short*, int), eph_t* ephemerides, short svCount);

@@ -19,8 +19,8 @@
 - [x] Determine if SVs are visible or not
 - [x] Implement SV tracking logic
 - [x] Add simulation progress bar
+- [x] Calculate psuedoranges
 
-- [ ] Calculate psuedoranges
 - [ ] Calculate sv code phases
 - [ ] Calculate sv phase angles
 - [ ] Calculate sv attenuations
