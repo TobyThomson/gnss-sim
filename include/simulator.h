@@ -66,7 +66,7 @@
 #define SAMPLE_FREQUENCY_MSPS           (2.5)
 #define SAMPLE_DURATION_S               (65.0)
 #define IQ_SAMPLE_WINDOW_S              (0.1)
-#define CHANNEL_COUNT			        (1)
+#define CHANNEL_COUNT			        (8)
 #define CARRIER_PHASE_RESOLUTION_INDEX  (9)
 
 #define SAMPLE_INTERVAL_S           (1.0 / (SAMPLE_FREQUENCY_MSPS * 1000000.0))
@@ -95,7 +95,7 @@ typedef struct {
 typedef struct {
 	SV* sv;
 
-    double carrierFrequency_Hz;
+    double carrierDopplerShift_Hz;
     double codeFrequency_Hz;
 
     unsigned long previousWord;
@@ -107,7 +107,7 @@ typedef struct {
     int navBitPointer;
 
     double codePhase_chips;
-    int carrierPhase_index;
+    double carrierPhase_cycles;
 } Channel;
 
 void simulate(void (*dumpCallback)(short*, int), eph_t* ephemerides, short svCount);

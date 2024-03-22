@@ -23,13 +23,14 @@
 - [x] Resolve potential bug where rankings change significantly after being initially established
 - [x] Switch to using channels for keeping track of all transmission information
 - [x] Calculate sv code phases
+- [x] Calculate sv carrier phases
+- [x] Get GNSS-SDR decoding multiple navigation messages at once (missing ingredients were code and carrier phases)
 
-- [ ] Calculate sv carrier phases
-- [ ] Get GNSS-SDR decoding multiple navigation messages at once
+- [ ] Set carrier phase starting points at correct time
+- [ ] Populate outstanding navmessage fields (mostly to do with atmospheric corrections)
 - [ ] Demonstrate MVP working!
 
 - [ ] Calculate sv attenuations
-- [ ] Populate outstanding navmessage fields (mostly to do with atmospheric corrections)
 
 ## Notes:
 * Had to move ```range``` and ```geoid``` variables from bottom to top of file in rtklib's ```geoid.c``` to get it to compile (those variables initiated twice otherwise). Not sure how anyone else gets away with compiling that

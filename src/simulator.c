@@ -460,13 +460,25 @@ void updateRecieverPosition(double* receiverPosition_llh, double* receiverPositi
     pos2ecef(receiverPosition_llh, receiverPosition_ecef);
 }
 
-// TODO: Add carrier adjustment
-void updateChannelModulation(Channel* channel, double codeAdvance_s) {
+void updateChannelModulation(Channel* channel, double timeStep_s) {
+    // Update the carrier phase
+    channel->carrierPhase_cycles += channel->carrierDopplerShift_Hz * timeStep_s;
+
+    // Keep the carrier phase between 0 and 1
+    if (channel->carrierPhase_cycles >= 1.0) {
+        channel->carrierPhase_cycles -= floor(channel->carrierPhase_cycles);
+    }
+
+    // TODO: Comment here
+    else if (channel->carrierPhase_cycles <= 0.0) {
+        channel->carrierPhase_cycles += fabs(ceil(channel->carrierPhase_cycles)) + 1;
+    }
+
     // Hold on to the initial code chip pointer for comparison later
     int initialCodeChip = floor(channel->codeChipPointer);
 
     // Convert code advance in seconds to chips and add to current code phase
-    channel->codeChipPointer += (codeAdvance_s * channel->codeFrequency_Hz);
+    channel->codeChipPointer += (timeStep_s * channel->codeFrequency_Hz);
 
     // Calculate the change in C/A code chip index
     int caChipPointerDelta = (int)floor(channel->codeChipPointer) - initialCodeChip;
@@ -497,30 +509,28 @@ void updateChannelModulation(Channel* channel, double codeAdvance_s) {
 }
 
 void updateChannelPhases(Channel channels[CHANNEL_COUNT], double* receiverPosition_ecef) {
-    double carrierDopplerShift_Hz;
     double codeDopplerShift_Hz;
-    double carrierCycles;
     double codePhase_s;
+    //double carrierCycles;
 
     for (int channel = 0; channel < CHANNEL_COUNT; channel++) {
         // Calculate the carrier frequency Doppler shift
         // NOTE: See here for explanation: https://gnss-sdr.org/docs/sp-blocks/observables/#pseudorange-rate-measurement
-        carrierDopplerShift_Hz = -channels[channel].sv->psuedorangeRate_ms / CARRIER_WAVELENGTH_M;
+        channels[channel].carrierDopplerShift_Hz = -channels[channel].sv->psuedorangeRate_ms / CARRIER_WAVELENGTH_M;
 
         // Calculate the carrier frequency Doppler shift
         // NOTE: This is only performed for the fundermental freqeuncy as the expected modulation bandwidth
         //       is ~24 MHz and the Doppler spread over this range should be limited
-        codeDopplerShift_Hz = carrierDopplerShift_Hz * (CA_CODE_FREQUENCY_HZ / CARRIER_FREQUENCY_HZ);
+        codeDopplerShift_Hz = channels[channel].carrierDopplerShift_Hz * (CA_CODE_FREQUENCY_HZ / CARRIER_FREQUENCY_HZ);
 
-        channels[channel].carrierFrequency_Hz = CARRIER_FREQUENCY_HZ + carrierDopplerShift_Hz;
         channels[channel].codeFrequency_Hz = CA_CODE_FREQUENCY_HZ + codeDopplerShift_Hz;
 
+        // TODO: Move and uncomment these lines to enable carrier phase measurements!
         // Calculate carrier cycles between reciever and satellite
-        carrierCycles = (channels[channel].sv->psuedorange_m / CARRIER_WAVELENGTH_M);
+        //carrierCycles = (channels[channel].sv->psuedorange_m / CARRIER_WAVELENGTH_M);
 
-        // TODO: Add carrier phase functionality
-        // Map the fractional component of the carrier phase to a trig table index to express carrier phase
-        channels[channel].carrierPhase_index = 0; //(int)((carrierCycles - floor(carrierCycles)) * (TRIG_TABLE_SIZE - 1));
+        // Find where we are within one cycle of the carrier phase
+        //channels[channel].carrierPhase_cycles = 0; //(carrierCycles - floor(carrierCycles));
 
         // Calculate the difference in expected transmission delay
         codePhase_s = (channels[channel].sv->psuedorange_m / LIGHTSPEED);
@@ -589,6 +599,7 @@ void simulate(void (*dumpCallback)(short*, int), eph_t* ephemerides, short svCou
         channel.navBit = 0;
         channel.navBitPointer = 0;
         channel.codePhase_chips = 0;
+        channel.carrierPhase_cycles = 0;
 
         channels[i] = channel;
     }
@@ -622,6 +633,7 @@ void simulate(void (*dumpCallback)(short*, int), eph_t* ephemerides, short svCou
             short iAccumulated = 0;
             short qAccumulated = 0;
             int previousNavBitPointer = 0;
+            int carrierPhaseIndex = 0;
 
             for (char channel = 0; channel < CHANNEL_COUNT; channel++) {
                 // Hold on to the current navbit pointer value
@@ -630,12 +642,18 @@ void simulate(void (*dumpCallback)(short*, int), eph_t* ephemerides, short svCou
                 // Increment the code phase and update the channel modulation. May result in no change.
                 updateChannelModulation(&channels[channel], SAMPLE_INTERVAL_S);
 
+                // Map the channel's carrier phase to an index in the carrier phase look-up table
+                // NOTE: Using look-up table to save processing time otherwise spent computing trig functions
+                carrierPhaseIndex = (int)(channels[channel].carrierPhase_cycles * (TRIG_TABLE_SIZE - 1));
+
+                //printf("%i\n", sinTable[carrierPhaseIndex]);
+
                 // Write I followed by Q value to the buffer
                 // NOTES:
                 // 1. "((x * 2) - 1)" maps a 0/1 value to a -1/1 value. Multiplying these remapped terms allows us to XOR them
                 // 2. Multiplication by sine and cosine used to introduce carrier phase differences
-                iAccumulated += ((channels[channel].codeChip * 2) - 1) * ((channels[channel].navBit * 2) - 1) * cosTable[channels[channel].carrierPhase_index];
-                qAccumulated += ((channels[channel].codeChip * 2) - 1) * ((channels[channel].navBit * 2) - 1) * sinTable[channels[channel].carrierPhase_index];
+                iAccumulated += ((channels[channel].codeChip * 2) - 1) * ((channels[channel].navBit * 2) - 1) * cosTable[carrierPhaseIndex];
+                qAccumulated += ((channels[channel].codeChip * 2) - 1) * ((channels[channel].navBit * 2) - 1) * sinTable[carrierPhaseIndex];
 
                 // If the navbit pointer wrapped around (i.e. we've gone past the last bit of this NAV frame)...
                 if (channels[channel].navBitPointer < previousNavBitPointer) {
