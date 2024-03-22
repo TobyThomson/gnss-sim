@@ -7,19 +7,26 @@
 #define BITMASK(bits) ((1 << (bits)) - 1)
 
 #define LIGHTSPEED              (2.99792458e8)
+#define SECONDS_IN_WEEK         (60 * 60 * 24 * 7)
 
-#define SUBFRAME_COUNT          (5UL)
+#define SUBFRAME_COUNT          (5)
 #define WORD_COUNT              (10)
 #define WORD_BIT_COUNT          (30)
 
 #define CA_REGISTER_LENGTH      (10)
 #define CA_CYCLES_PER_NAV_BIT   (20)
-#define CA_CODE_CHIP_DURATION_S (1.0 / 1023000.0)
-#define SUBFRAME_DURATION_S     (WORD_COUNT * WORD_BIT_COUNT * CA_CYCLES_PER_NAV_BIT * CA_CODE_SEQUENCE_LENGTH * CA_CODE_CHIP_DURATION_S)
-#define SECONDS_IN_WEEK         (60 * 60 * 24 * 7)
+#define CA_CODE_SEQUENCE_LENGTH (1023)
+#define SUBFRAME_DURATION_S     (6)
 #define TOW_RESOLUTION_S        (1.5)
 
-#define CA_CODE_SEQUENCE_LENGTH (1023)
+#define CARRIER_FREQUENCY_HZ    (1575420000.0)
+#define CA_CODE_FREQUENCY_HZ    (1023000.0)
+
+#define CARRIER_WAVELENGTH_M        (LIGHTSPEED / CARRIER_FREQUENCY_HZ)
+#define CA_CODE_WAVELENGTH_M        (LIGHTSPEED / CA_CODE_FREQUENCY_HZ)
+#define CA_CODE_CHIP_DURATION_S     (1.0 / CA_CODE_FREQUENCY_HZ)
+#define FRAME_BIT_COUNT             (SUBFRAME_COUNT * WORD_COUNT * WORD_BIT_COUNT)
+#define FRAME_CA_CHIP_COUNT         (FRAME_BIT_COUNT * CA_CYCLES_PER_NAV_BIT * CA_CODE_SEQUENCE_LENGTH)
 
 // TODO: Add missing references
 #define TLM_WORD_PREAMBLE       (0b10001011)
@@ -55,12 +62,15 @@
 #define SUBFRAME_4_PAGE_18_ID   (56UL) // (Ref: )
 #define SUBFRAME_5_PAGE_25_ID   (51UL) // (Ref: )
 
-#define VISIBILITY_UPDATE_INTERVAL_S (15.0)
-#define SAMPLE_FREQUENCY_MSPS   (2.5)
-#define SAMPLE_DURATION_S       (65.0)
-#define SAMPLE_INTERVAL_S       (1.0 / (SAMPLE_FREQUENCY_MSPS * 1000000.0))
-#define IQ_SAMPLE_WINDOW_S      (0.1)
-#define CHANNEL_COUNT			(1)
+#define VISIBILITY_UPDATE_INTERVAL_S    (15.0)
+#define SAMPLE_FREQUENCY_MSPS           (2.5)
+#define SAMPLE_DURATION_S               (65.0)
+#define IQ_SAMPLE_WINDOW_S              (0.1)
+#define CHANNEL_COUNT			        (1)
+#define CARRIER_PHASE_RESOLUTION_INDEX  (9)
+
+#define SAMPLE_INTERVAL_S           (1.0 / (SAMPLE_FREQUENCY_MSPS * 1000000.0))
+#define TRIG_TABLE_SIZE             (1 << CARRIER_PHASE_RESOLUTION_INDEX)
 
 // Multiplied by two as we need to record both and I and a Q value per sample
 #define IQ_BUFFER_SIZE          (int)((SAMPLE_FREQUENCY_MSPS * 1000000 * IQ_SAMPLE_WINDOW_S) * 2)
@@ -68,26 +78,36 @@
 typedef struct {
     char caCodeSequence[CA_CODE_SEQUENCE_LENGTH];
     unsigned long navFrameBoilerPlate[SUBFRAME_COUNT][WORD_COUNT];
-	unsigned long navFrame[SUBFRAME_COUNT][WORD_COUNT];
-	unsigned long previousWord;
-
-    bool initialized;
+    unsigned long navFrame[SUBFRAME_COUNT][WORD_COUNT];
 
 	unsigned short prn;
+
     eph_t ephemeris;
+    double psuedorange_m;
+    double psuedorangeRate_ms;
     double position_ecef[3];
     float recieverAngularDistance_rad;
+
     double clockBias_s;
     double variance;
 } SV;
 
 typedef struct {
 	SV* sv;
-	int navBitPointer;
-    double caChipPointer;
-    short caCycleCount;
-    short navBit;
-    double caCodePhase;
+
+    double carrierFrequency_Hz;
+    double codeFrequency_Hz;
+
+    unsigned long previousWord;
+
+    char codeChip;
+    double codeChipPointer;
+
+    char navBit;
+    int navBitPointer;
+
+    double codePhase_chips;
+    int carrierPhase_index;
 } Channel;
 
 void simulate(void (*dumpCallback)(short*, int), eph_t* ephemerides, short svCount);

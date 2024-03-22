@@ -397,10 +397,30 @@ void calculateAngularDistance(double* satellitePosition_ecef, double* receiverPo
     *receiverAngularDistance_rad = acos(sin(azimuthElevation_rad[1]));
 }
 
-void updateSatellitePositons(gtime_t time, SV** svs, short svCount, double* receiverPosition_ecef) {
+void updateSatellitePositions(gtime_t time, SV** svs, short svCount, double* receiverPosition_ecef, double timeStep_s) {
+    // Required to keep "geodist" happy. Not used beyond that
+    double lineOfSightVector_ecef[3];
+
+    double psuedorange_m;
+    double psuedorangeRate_ms;
+
     for (int sv = 0; sv < svCount; sv++) {
+        // Update satellite position in the ECEF frame
         eph2pos(time, &svs[sv]->ephemeris, svs[sv]->position_ecef, &svs[sv]->clockBias_s, &svs[sv]->variance);
+
+        // Calculate the angular distance between the satellite and reciever
         calculateAngularDistance(svs[sv]->position_ecef, receiverPosition_ecef, &svs[sv]->recieverAngularDistance_rad);
+
+        // TODO: Update this to include ionoshperic (+ other?) effects
+        // Update the current psuedorange
+        psuedorange_m = geodist(svs[sv]->position_ecef, receiverPosition_ecef, lineOfSightVector_ecef);
+
+        // Calculate the new psuedorange rate
+        psuedorangeRate_ms = ((psuedorange_m - svs[sv]->psuedorange_m) / timeStep_s);
+
+        // Update the current psuedorange and rate
+        svs[sv]->psuedorange_m = psuedorange_m;
+        svs[sv]->psuedorangeRate_ms = psuedorangeRate_ms;
     }
 }
 
@@ -414,9 +434,9 @@ int compareSatelliteVisibility(const void *p1, const void *p2) {
     return 0;
 }
 
-void updateChannelAllocations(gtime_t time, Channel channels[CHANNEL_COUNT], SV** svs, short svCount, double* receiverPosition_ecef) {
+void updateChannelAllocations(gtime_t time, Channel channels[CHANNEL_COUNT], SV** svs, short svCount, double* receiverPosition_ecef, double timeStep_s) {
     // Determine all sv positions
-    updateSatellitePositons(time, svs, svCount, receiverPosition_ecef);
+    updateSatellitePositions(time, svs, svCount, receiverPosition_ecef, timeStep_s);
 
     // Rank satellites by distance from the receiver's sky center
     qsort(svs, svCount, sizeof(SV*), compareSatelliteVisibility);
@@ -427,8 +447,7 @@ void updateChannelAllocations(gtime_t time, Channel channels[CHANNEL_COUNT], SV*
         channels[i].sv = svs[i];
 
         // Generate initial navframe
-        // TODO: Store more of this information in the channel struct rather than the sv struct?
-        generateNAVFrame(time, &channels[i].sv->previousWord, channels[i].sv->navFrame, true);
+        generateNAVFrame(time, &channels[i].previousWord, channels[i].sv->navFrame, true);
     }
 }
 
@@ -441,16 +460,72 @@ void updateRecieverPosition(double* receiverPosition_llh, double* receiverPositi
     pos2ecef(receiverPosition_llh, receiverPosition_ecef);
 }
 
-void updateChannelCodePhases(Channel channels[CHANNEL_COUNT], double* receiverPosition_ecef) {
-    // Required to keep "geodist" happy. Not used beyond that
-    double lineOfSightVector_ecef[3];
+void updateChannelModulation(Channel* channel, double codeAdvance_s) {
+    // Hold on to the initial code chip pointer for comparison later
+    int initialCodeChip = floor(channel->codeChipPointer);
+
+    // Convert phase in seconds to chips and add to current code phase
+    channel->codeChipPointer += (codeAdvance_s / (1 / channel->codeFrequency_Hz));
+
+    // Calculate the change in C/A code chip index
+    int caChipPointerDelta = (int)floor(channel->codeChipPointer) - initialCodeChip;
+
+    // If there was a change in the C/A code chip...
+    if (caChipPointerDelta) {
+        // Wrap codeChipPointer around after each frame to prevent overflow
+        if (channel->codeChipPointer >= FRAME_CA_CHIP_COUNT) {
+            channel->codeChipPointer -= FRAME_CA_CHIP_COUNT;
+        }
+
+        // Get the next C/A Code bit. Use the code phase to provide the offset. Modulo ensures sequence will not overflow
+        channel->codeChip = channel->sv->caCodeSequence[((int)floor(channel->codeChipPointer + channel->codePhase_chips) % CA_CODE_SEQUENCE_LENGTH)];
+
+        // Convert code phase to navbit index
+        channel->navBitPointer = (int)floor((channel->codeChipPointer + channel->codePhase_chips) / CA_CODE_SEQUENCE_LENGTH / CA_CYCLES_PER_NAV_BIT);
+
+        // Wrap the navbit pointer back around if it exceeds the frame size
+        channel->navBitPointer = (channel->navBitPointer % FRAME_BIT_COUNT);
+
+        // Get the current NAV frame bit
+        short subframe = channel->navBitPointer / (WORD_COUNT * WORD_BIT_COUNT);
+        short word = (channel->navBitPointer % (WORD_COUNT * WORD_BIT_COUNT)) / WORD_BIT_COUNT;
+        short bit = channel->navBitPointer % WORD_BIT_COUNT;
+
+        channel->navBit = (channel->sv->navFrame[subframe][word] >> (29 - bit)) & 0x1;
+    }
+}
+
+void updateChannelPhases(Channel channels[CHANNEL_COUNT], double* receiverPosition_ecef) {
+    double carrierDopplerShift_Hz;
+    double codeDopplerShift_Hz;
+    double carrierCycles;
+    double codePhase_s;
 
     for (int channel = 0; channel < CHANNEL_COUNT; channel++) {
-        double psuedorange_m = geodist(channels[channel].sv->position_ecef, receiverPosition_ecef, lineOfSightVector_ecef);
+        // Calculate the carrier frequency Doppler shift
+        // NOTE: See here for explanation: https://gnss-sdr.org/docs/sp-blocks/observables/#pseudorange-rate-measurement
+        carrierDopplerShift_Hz = -channels[channel].sv->psuedorangeRate_ms / CARRIER_WAVELENGTH_M;
 
-        // TODO: Work out what to do here...
-        // double transitTime_s = psuedorange_m / LIGHTSPEED;
-        // channels[channel].caCodePhase = ;
+        // Calculate the carrier frequency Doppler shift
+        // NOTE: This is only performed for the fundermental freqeuncy as the expected modulation bandwidth
+        //       is ~24 MHz and the Doppler spread over this range should be limited
+        codeDopplerShift_Hz = carrierDopplerShift_Hz * (CA_CODE_FREQUENCY_HZ / CARRIER_FREQUENCY_HZ);
+
+        channels[channel].carrierFrequency_Hz = CARRIER_FREQUENCY_HZ + carrierDopplerShift_Hz;
+        channels[channel].codeFrequency_Hz = CA_CODE_FREQUENCY_HZ + codeDopplerShift_Hz;
+
+        // Calculate carrier cycles between reciever and satellite
+        carrierCycles = (channels[channel].sv->psuedorange_m / CARRIER_WAVELENGTH_M);
+
+        // TODO: Add carrier phase functionality
+        // Map the fractional component of the carrier phase to a trig table index to express carrier phase
+        channels[channel].carrierPhase_index = 0; //(int)((carrierCycles - floor(carrierCycles)) * (TRIG_TABLE_SIZE - 1));
+
+        // Calculate the difference in expected transmission delay
+        codePhase_s = (channels[channel].sv->psuedorange_m / LIGHTSPEED);
+
+        // Update channel code phase
+        channels[channel].codePhase_chips = (codePhase_s / CA_CODE_CHIP_DURATION_S);
     }
 }
 
@@ -507,11 +582,12 @@ void simulate(void (*dumpCallback)(short*, int), eph_t* ephemerides, short svCou
         Channel channel;
 
         channel.sv = NULL;
-        channel.navBitPointer = 0;
-        channel.caChipPointer = 0;
-        channel.caCycleCount = 0;
+        channel.previousWord = 0;
+        channel.codeChip = 0;
+        channel.codeChipPointer = 0;
         channel.navBit = 0;
-        channel.caCodePhase = 0;
+        channel.navBitPointer = 0;
+        channel.codePhase_chips = 0;
 
         channels[i] = channel;
     }
@@ -526,7 +602,7 @@ void simulate(void (*dumpCallback)(short*, int), eph_t* ephemerides, short svCou
 
         // Decide if it's time to update which satellites are in view
         if (timediff(visibilityUpdateTime, simulationTime) <= 0) {
-            updateChannelAllocations(simulationTime, channels, rankedSvs, svCount, receiverPosition_ecef);
+            updateChannelAllocations(simulationTime, channels, rankedSvs, svCount, receiverPosition_ecef, IQ_SAMPLE_WINDOW_S);
 
             // Stage the next visibility update
             visibilityUpdateTime = timeadd(visibilityUpdateTime, VISIBILITY_UPDATE_INTERVAL_S);
@@ -534,56 +610,37 @@ void simulate(void (*dumpCallback)(short*, int), eph_t* ephemerides, short svCou
 
         // ...otherwise just update the visible satellite positions
         else {
-            updateSatellitePositons(simulationTime, rankedSvs, CHANNEL_COUNT, receiverPosition_ecef);
+            updateSatellitePositions(simulationTime, rankedSvs, CHANNEL_COUNT, receiverPosition_ecef, IQ_SAMPLE_WINDOW_S);
         }
 
-        // Determine satellite-reciever distance and how this impacts the C/A code phase
-        updateChannelCodePhases(channels, receiverPosition_ecef);
+        // Determine satellite-reciever distances and how this impacts the code and carrier phases
+        updateChannelPhases(channels, receiverPosition_ecef);
 
         // Fill sample window IQ buffer
         for (int i = 0; i < IQ_BUFFER_SIZE; i += 2) {
             short iAccumulated = 0;
             short qAccumulated = 0;
+            int previousNavBitPointer = 0;
 
             for (char channel = 0; channel < CHANNEL_COUNT; channel++) {
-                // Get the appropriate C/A Code bit (may not have changed since last iteration)
-                char caCodeChip = channels[channel].sv->caCodeSequence[(int)channels[channel].caChipPointer];
+                // Hold on to the current navbit pointer value
+                previousNavBitPointer = channels[channel].navBitPointer;
 
-                // TODO: Generate this properly
-                short phase = 0;
+                // Increment the code phase and update the channel modulation. May result in no change.
+                updateChannelModulation(&channels[channel], SAMPLE_INTERVAL_S);
 
-                // TODO: Modify these two lines to allow code phase adjustment
                 // Write I followed by Q value to the buffer
-                // "((x * 2) - 1)" maps a 0/1 value to a -1/1 value. Multiplying these remapped terms allows us to XOR them.
-                iAccumulated += ((channels[channel].navBit * 2) - 1) * ((caCodeChip * 2) - 1) * cosTable[phase];
-                qAccumulated += ((channels[channel].navBit * 2) - 1) * ((caCodeChip * 2) - 1) * sinTable[phase];
+                // NOTES:
+                // 1. "((x * 2) - 1)" maps a 0/1 value to a -1/1 value. Multiplying these remapped terms allows us to XOR them
+                // 2. Multiplication by sine and cosine used to introduce carrier phase differences
+                iAccumulated += ((channels[channel].codeChip * 2) - 1) * ((channels[channel].navBit * 2) - 1) * cosTable[channels[channel].carrierPhase_index];
+                qAccumulated += ((channels[channel].codeChip * 2) - 1) * ((channels[channel].navBit * 2) - 1) * sinTable[channels[channel].carrierPhase_index];
 
-                channels[channel].caChipPointer += (SAMPLE_INTERVAL_S / CA_CODE_CHIP_DURATION_S);
-                
-                if (channels[channel].caChipPointer >= CA_CODE_SEQUENCE_LENGTH) {
-                    channels[channel].caChipPointer -= CA_CODE_SEQUENCE_LENGTH;
-                    channels[channel].caCycleCount++;
-
-                    if (channels[channel].caCycleCount >= CA_CYCLES_PER_NAV_BIT) {
-                        channels[channel].caCycleCount = 0;
-                        channels[channel].navBitPointer++;
-                        
-                        // If we've gone past the last bit of this NAV frame...
-                        if ((channels[channel].navBitPointer % (SUBFRAME_COUNT * WORD_COUNT * WORD_BIT_COUNT)) == 0) {
-                            channels[channel].navBitPointer = 0;
-
-                            // Generate the next NAV frame!
-                            memcpy(channels[channel].sv->navFrame, channels[channel].sv->navFrameBoilerPlate, sizeof(channels[channel].sv->navFrameBoilerPlate));
-                            generateNAVFrame(simulationTime, &(channels[channel].sv->previousWord), channels[channel].sv->navFrame, false);
-                        }
-
-                        // Get the next NAV frame bit
-                        short subframe = channels[channel].navBitPointer / (WORD_COUNT * WORD_BIT_COUNT);
-                        short word = (channels[channel].navBitPointer % (WORD_COUNT * WORD_BIT_COUNT)) / WORD_BIT_COUNT;
-                        short bit = channels[channel].navBitPointer % WORD_BIT_COUNT;
-
-                        channels[channel].navBit = (channels[channel].sv->navFrame[subframe][word] >> (29 - bit)) & 0x1;
-                    }
+                // If the navbit pointer wrapped around (i.e. we've gone past the last bit of this NAV frame)...
+                if (channels[channel].navBitPointer < previousNavBitPointer) {
+                    // Generate the next NAV frame!
+                    memcpy(channels[channel].sv->navFrame, channels[channel].sv->navFrameBoilerPlate, sizeof(channels[channel].sv->navFrameBoilerPlate));
+                    generateNAVFrame(simulationTime, &(channels[channel].previousWord), channels[channel].sv->navFrame, false);
                 }
             }
 
