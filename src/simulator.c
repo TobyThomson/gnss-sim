@@ -460,12 +460,13 @@ void updateRecieverPosition(double* receiverPosition_llh, double* receiverPositi
     pos2ecef(receiverPosition_llh, receiverPosition_ecef);
 }
 
+// TODO: Add carrier adjustment
 void updateChannelModulation(Channel* channel, double codeAdvance_s) {
     // Hold on to the initial code chip pointer for comparison later
     int initialCodeChip = floor(channel->codeChipPointer);
 
-    // Convert phase in seconds to chips and add to current code phase
-    channel->codeChipPointer += (codeAdvance_s / (1 / channel->codeFrequency_Hz));
+    // Convert code advance in seconds to chips and add to current code phase
+    channel->codeChipPointer += (codeAdvance_s * channel->codeFrequency_Hz);
 
     // Calculate the change in C/A code chip index
     int caChipPointerDelta = (int)floor(channel->codeChipPointer) - initialCodeChip;
