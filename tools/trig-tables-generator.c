@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include <math.h>
 
-#define INDEX_MULTIPLIER 9
+#define INDEX_MULTIPLIER 12
 #define TABLE_SIZE (1 << INDEX_MULTIPLIER)
 #define AMPLITUDE (250.0)
 #define RESOLUTION (360.0 / TABLE_SIZE)

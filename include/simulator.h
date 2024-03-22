@@ -66,8 +66,8 @@
 #define SAMPLE_FREQUENCY_MSPS           (2.5)
 #define SAMPLE_DURATION_S               (65.0)
 #define IQ_SAMPLE_WINDOW_S              (0.1)
-#define CHANNEL_COUNT			        (8)
-#define CARRIER_PHASE_RESOLUTION_INDEX  (9)
+#define CHANNEL_COUNT			        (5)
+#define CARRIER_PHASE_RESOLUTION_INDEX  (12)
 
 #define SAMPLE_INTERVAL_S           (1.0 / (SAMPLE_FREQUENCY_MSPS * 1000000.0))
 #define TRIG_TABLE_SIZE             (1 << CARRIER_PHASE_RESOLUTION_INDEX)
