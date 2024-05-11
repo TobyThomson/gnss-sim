@@ -1,8 +1,9 @@
 build/
 .vscode/
 ref/
-libs/
+libs/progressbar/*
+libs/rtklib-2.4.3/*
+tools/*.out
 test/**
 !test/**/*.sh
 !test/**/*.conf
-!test/rinex-import
