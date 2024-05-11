@@ -6,6 +6,7 @@
 #include "../libs/rtklib-2.4.3/src/rtklib.h"
 
 #include "../include/simulator.h"
+#include "../include/debug.h"
 #include "../include/trig-tables.h"
 
 // Return a long representing the x multiples of "scale factor" required to express the original double.
@@ -16,8 +17,6 @@ long scaleDouble(double operand, double scaleFactorIndex) {
 }
 
 void generateNAVFrameBoilerplate(unsigned long frame[SUBFRAME_COUNT][WORD_COUNT], eph_t* ephemeris) {
-    // TODO: Populate missing fields (those that are not provided by eph_t)
-
     // *** SUBFRAME 1 PARAMETERS ***
     // NOTES:
     // 1. (unsigned) cast required to resolve odd behaviour where compiler was treating 
@@ -59,7 +58,7 @@ void generateNAVFrameBoilerplate(unsigned long frame[SUBFRAME_COUNT][WORD_COUNT]
     unsigned long idot       = (unsigned)(scaleDouble((ephemeris->idot / PI),           -43) & BITMASK(14));
 
     // *** IONOSPHERIC PARAMETERS ***
-    // TODO: Correct these
+    // TODO: Populate these
     unsigned long alpha0     = 0;
     unsigned long alpha1     = 0;
     unsigned long alpha2     = 0;
@@ -70,7 +69,7 @@ void generateNAVFrameBoilerplate(unsigned long frame[SUBFRAME_COUNT][WORD_COUNT]
     unsigned long beta3      = 0;
 
     // *** UTC PARAMETERS ***
-    // TODO: Correct these
+    // TODO: Populate these
     unsigned long a0         = 0;
     unsigned long a1         = 0;
     unsigned long deltaTls   = 0;
@@ -81,7 +80,7 @@ void generateNAVFrameBoilerplate(unsigned long frame[SUBFRAME_COUNT][WORD_COUNT]
     unsigned long deltaTlsf  = 0;
 
     // *** ALMANAC PARAMETERS ***
-    // TODO: Correct these
+    // TODO: Populate these
     unsigned long toa        = 0;
     unsigned long wna        = 0;
 
@@ -254,29 +253,49 @@ void computeParity(unsigned long* word, unsigned long* previousWord, unsigned sh
     *word = D;
 }
 
+unsigned long updateTOW(unsigned long* tow_epochs, int* wn, double timeStep_s) {
+    // Cast tow to unsigned to make the operation easier
+    long workingTow_epochs = (signed)(*tow_epochs);
+
+    // Convert timeStep_s to timeStep_epochs
+    long timeStep_epochs = (signed)(timeStep_s / SUBFRAME_DURATION_S);
+
+    // Add timeStep_epochs to tow_epochs
+    workingTow_epochs += timeStep_epochs;
+
+    // Wrap around if result crosses the week boundary (Ref: IS-GPS-200N: 3.3.4 GPS Time and SV Z-Count)
+    if (workingTow_epochs > 100799) {
+        workingTow_epochs -= 100799;
+        *wn += 1;
+    }
+    
+    else if (workingTow_epochs < 0) {
+        workingTow_epochs += 100799;
+        *wn -= 1;
+    }
+
+    // Cast and assign the updated value
+    *tow_epochs = (unsigned)workingTow_epochs;
+}
+
+
 void generateNAVFrame(gtime_t initalTime, unsigned long* previousWord, unsigned long frame[SUBFRAME_COUNT][WORD_COUNT], bool init) {
     int wn;
-    double tow = time2gpst(initalTime, &wn);
+    double tow_s = time2gpst(initalTime, &wn);
 
-    // Mask Week Number to 10 bits (Ref: IS-GPS-200N: 3.3.4 GPS Time and SV Z-Count)
-    unsigned long navmessageWn = wn & BITMASK(10);
+    // NOTES:
+    // 1. Convert tow_s to TOW by dividing by TOW epoch duration
+    // 2. See IS-GPS-200N: 20.3.3.2 Handover Word (HOW) and IS-GPS-200N: 3.3.4 GPS Time and SV Z-Count
+    unsigned long tow_epochs = (unsigned)(tow_s / SUBFRAME_DURATION_S);
+    unsigned long navmessageWn;
 
-    unsigned long navmessageTow;
-
-    // The last word of the previous frame is required to generate the parity bits for this frame.
-    // We must generate the last word of the previous frame if one is not available (occurs on init).
+    // The last word of the previous frame is required to generate the parity bits for this frame
+    // We must generate the last word of the previous frame if one is not available (occurs on init)
     if (init) {
-        // Rewind TOW one subframe to generate this at the correct time
-        tow -= SUBFRAME_DURATION_S;
-
-        // "tow" is scaled then masked to 19 bits (Ref: IS-GPS-200N: 3.3.4 GPS Time and SV Z-Count)
-        navmessageTow = (unsigned)(tow / TOW_RESOLUTION_S) & BITMASK(19);
-
         for (short word = 0; word < WORD_COUNT; word++) {
-            // Insert TOW into the HOW (2nd word of subframe).
+            // Insert TOW into the HOW (2nd word of subframe)
 			if (word == 1) {
-                // Only want the 17 MSBs of "navmessageTow" (Ref: IS-GPS-200N: 20.3.3.2 Handover Word (HOW))
-                frame[4][word] |= ((navmessageTow >> 2) << 13);
+                frame[4][word] |= (tow_epochs << 13);
             }
             
             // solveNibs = "true" when looking at either the 2nd or 10th word.
@@ -285,11 +304,12 @@ void generateNAVFrame(gtime_t initalTime, unsigned long* previousWord, unsigned 
     }
 
     for (short subframe = 0; subframe < SUBFRAME_COUNT; subframe++) {
-        // Increment the TOW between subframes.
-        tow += SUBFRAME_DURATION_S;
+        // Increment the TOW between subframes
+        updateTOW(&tow_epochs, &wn, SUBFRAME_DURATION_S);
 
-        // "tow" is scaled then masked to 19 bits (Ref: IS-GPS-200N: 3.3.4 GPS Time and SV Z-Count)
-        navmessageTow = (unsigned)(lround(tow / TOW_RESOLUTION_S) & BITMASK(19));
+        // Mask TOW and WN for safety
+        tow_epochs = tow_epochs & BITMASK(17);
+        navmessageWn = wn & BITMASK(10);
 
         for (short word = 0; word < WORD_COUNT; word++) {
             // Add Transmission Week Number to the third word of subframe one.
@@ -299,8 +319,7 @@ void generateNAVFrame(gtime_t initalTime, unsigned long* previousWord, unsigned 
 
 			// Insert TOW into the HOW (2nd word of subframe).
 			if (word == 1) {
-                // Only want the 17 MSBs of "navmessageTow" (Ref: IS-GPS-200N: 20.3.3.2 Handover Word (HOW))
-                frame[subframe][word] |= ((navmessageTow >> 2) << 13);
+                frame[subframe][word] |= (tow_epochs << 13);
             }
             
             // solveNibs = "true" when looking at either the 2nd or 10th word.
@@ -371,56 +390,45 @@ void generateCACodeSequence(char caCodeSequence[CA_CODE_SEQUENCE_LENGTH], char p
     }
 }
 
-void printNavmessage(unsigned long frame[SUBFRAME_COUNT][WORD_COUNT]) {
-    for (short subframe = 0; subframe < SUBFRAME_COUNT; subframe++) {
-        printf("SUBFRAME %i: \n", (subframe + 1));
-        for (short word = 0; word < WORD_COUNT; word++) {
-            printf("%i\t%030b\n", (word + 1), frame[subframe][word]);
-        }
-
-        printf("\n");
-    }
-}
-
-// TODO: Just use dot product of pointing vector and normal vector instead?
-void calculateAngularDistance(double* satellitePosition_ecef, double* receiverPosition_ecef, float* receiverAngularDistance_rad) {
-    double lineOfSightVector_ecef[3];
+// TODO: Update this to include ionoshperic (+ other?) effects
+void updateSatellitePositions(gtime_t simulationTime, SV** svs, short svCount, double* receiverPosition_ecef, double timeStep_s) {
     double receiverPosition_llh[3];
-    double azimuthElevation_rad[2];
-
-    geodist(satellitePosition_ecef, receiverPosition_ecef, lineOfSightVector_ecef);
-    ecef2pos(receiverPosition_ecef, receiverPosition_llh);
-    satazel(receiverPosition_llh, lineOfSightVector_ecef, azimuthElevation_rad);
-
-    // Using a simplified version of the formula from here: https://math.stackexchange.com/questions/2904702/finding-the-angle-between-two-points-given-their-azimuth-and-elevation-angles
-    // Assuming that El1 is pi/2 and Az1 is 0 (center of the sky)
-    *receiverAngularDistance_rad = acos(sin(azimuthElevation_rad[1]));
-}
-
-void updateSatellitePositions(gtime_t time, SV** svs, short svCount, double* receiverPosition_ecef, double timeStep_s) {
-    // Required to keep "geodist" happy. Not used beyond that
     double lineOfSightVector_ecef[3];
-
+    double azimuthElevation_rad[2];
+    
     double psuedorange_m;
     double psuedorangeRate_ms;
 
     for (int sv = 0; sv < svCount; sv++) {
-        // Update satellite position in the ECEF frame
-        eph2pos(time, &svs[sv]->ephemeris, svs[sv]->position_ecef, &svs[sv]->clockBias_s, &svs[sv]->variance);
+        // Critical check to prevent **MASSIVE** initial pseudorange rates which **WILL** completly mess up channel navbit and code chip pointers otherwise!
+        if (svs[sv]->psuedorange_m == 0) {
+            // Use the imagined previous time step
+            gtime_t previousSimulationTime = timeadd(simulationTime, -timeStep_s);
 
-        // Calculate the angular distance between the satellite and reciever
-        calculateAngularDistance(svs[sv]->position_ecef, receiverPosition_ecef, &svs[sv]->recieverAngularDistance_rad);
+            // Find previous satellite position in the ECEF frame
+            eph2pos(previousSimulationTime, &svs[sv]->ephemeris, svs[sv]->position_ecef, &svs[sv]->clockBias_s, &svs[sv]->variance);
 
-        // TODO: Update this to include ionoshperic (+ other?) effects
-        // Update the current psuedorange
+            // Find the previous satellite-receiver pseudorange
+            svs[sv]->psuedorange_m = geodist(svs[sv]->position_ecef, receiverPosition_ecef, lineOfSightVector_ecef);
+        }
+
+        // Update satellite position in the ECEF frame (now using the current simulation time)
+        eph2pos(simulationTime, &svs[sv]->ephemeris, svs[sv]->position_ecef, &svs[sv]->clockBias_s, &svs[sv]->variance);
+
+        // Calculate the current psuedorange
         psuedorange_m = geodist(svs[sv]->position_ecef, receiverPosition_ecef, lineOfSightVector_ecef);
 
         // Calculate the new psuedorange rate
         psuedorangeRate_ms = ((psuedorange_m - svs[sv]->psuedorange_m) / timeStep_s);
 
-        // Update the current psuedorange and rate
+        // Use the reciever position (in llh) to find satellite azimuth and elevation
+        ecef2pos(receiverPosition_ecef, receiverPosition_llh);
+        satazel(receiverPosition_llh, lineOfSightVector_ecef, azimuthElevation_rad);
+
+        // Update the current psuedorange, rate and elevation
         svs[sv]->psuedorange_m = psuedorange_m;
         svs[sv]->psuedorangeRate_ms = psuedorangeRate_ms;
+        svs[sv]->elevation_rad = azimuthElevation_rad[1];
     }
 }
 
@@ -428,15 +436,24 @@ int compareSatelliteVisibility(const void *p1, const void *p2) {
     const SV *q1 = *(const SV **)p1;
     const SV *q2 = *(const SV **)p2;
 
+    // Convert elevation to sky center distance
+    double q1SkyCenterDistance = ((PI / 2) - q1->elevation_rad);
+    double q2SkyCenterDistance = ((PI / 2) - q2->elevation_rad);
+
     // Sort in descending order of distance from sky center
-    if (q1->recieverAngularDistance_rad > q2->recieverAngularDistance_rad) return 1;
-    if (q1->recieverAngularDistance_rad < q2->recieverAngularDistance_rad) return -1;
+    if (q1SkyCenterDistance > q2SkyCenterDistance) return 1;
+    if (q1SkyCenterDistance < q2SkyCenterDistance) return -1;
     return 0;
 }
 
-void updateChannelAllocations(gtime_t time, Channel channels[CHANNEL_COUNT], SV** svs, short svCount, double* receiverPosition_ecef, double timeStep_s) {
+void updateChannelAllocations(gtime_t simulationTime, Channel channels[CHANNEL_COUNT], SV** svs, short svCount, double* receiverPosition_ecef, double timeStep_s) {
+    // Reset all the satellite pseudorange rates. Critical to prevent **MASSIVE** pseudorange rate errors
+    for (int i = 0; i < svCount; i++) {
+        svs[i]->psuedorangeRate_ms = 0;
+    }
+
     // Determine all sv positions
-    updateSatellitePositions(time, svs, svCount, receiverPosition_ecef, timeStep_s);
+    updateSatellitePositions(simulationTime, svs, svCount, receiverPosition_ecef, timeStep_s);
 
     // Rank satellites by distance from the receiver's sky center
     qsort(svs, svCount, sizeof(SV*), compareSatelliteVisibility);
@@ -447,96 +464,116 @@ void updateChannelAllocations(gtime_t time, Channel channels[CHANNEL_COUNT], SV*
         channels[i].sv = svs[i];
 
         // Generate initial navframe
-        generateNAVFrame(time, &channels[i].previousWord, channels[i].sv->navFrame, true);
+        generateNAVFrame(simulationTime, &channels[i].previousWord, channels[i].sv->navFrame, true);
+
+        // Determine the code and carrier frequencies and phases
+        updateChannelProperties(&channels[i], 1);
+
+        // Calculate the difference in expected transmission delay
+        double codePhase_s = (channels[i].sv->psuedorange_m / LIGHTSPEED);
+
+        // Determine time in week (used in conjunction with code phase to set the intial navbit and code chip)
+        int wn;
+        double tow = time2gpst(simulationTime, NULL);
+
+        // Reset the code chip and navbit pointers
+        channels[i].codeChipPointer = 0;
+        channels[i].navBitPointer = 0;
+
+        // Advance the channel modulation to the appropriate starting bit and chip
+        advanceChannelModulation(&channels[i], simulationTime, (tow + codePhase_s), true);
     }
 }
 
 // TODO: Allow user to specify reciever position somehow
 void updateRecieverPosition(double* receiverPosition_llh, double* receiverPosition_ecef) {
-    // Convert latitude and longitude in degrees to radians
-    receiverPosition_llh[0] *= (PI / 180);
-    receiverPosition_llh[1] *= (PI / 180);
+    double receiverPositionCopy_llh[3];
+    memcpy(receiverPositionCopy_llh, receiverPosition_llh, (sizeof(receiverPosition_llh) * 3));
 
-    pos2ecef(receiverPosition_llh, receiverPosition_ecef);
+    // Convert latitude and longitude in degrees to radians
+    receiverPositionCopy_llh[0] *= (PI / 180);
+    receiverPositionCopy_llh[1] *= (PI / 180);
+
+    // Convert llh to ecef frame
+    pos2ecef(receiverPositionCopy_llh, receiverPosition_ecef);
 }
 
-void updateChannelModulation(Channel* channel, double timeStep_s) {
+// NOTE: This may look a little funky. The goal was to provide a single function to update the channel modulation to ease comprehension.
+//       It is **REALLLY** slow when called with totalIncrement_s values >> CA_CODE_SEQUENCE_LENGTH. This is an accepted tradeoff for now.
+void advanceChannelModulation(Channel* channel, gtime_t simulationTime, double totalIncrement_s, bool init) {
     // Update the carrier phase
-    channel->carrierPhase_cycles += channel->carrierDopplerShift_Hz * timeStep_s;
+    channel->carrierPhase_cycles += channel->carrierDopplerShift_Hz * totalIncrement_s;
 
-    // Keep the carrier phase between 0 and 1
+    // TODO: Implement a more perfromant version of this
+    // Clamp the carrier phase between 0 and 1
     if (channel->carrierPhase_cycles >= 1.0) {
         channel->carrierPhase_cycles -= floor(channel->carrierPhase_cycles);
     }
-
-    // TODO: Comment here
+    
     else if (channel->carrierPhase_cycles <= 0.0) {
         channel->carrierPhase_cycles += fabs(ceil(channel->carrierPhase_cycles)) + 1;
     }
 
-    // Hold on to the initial code chip pointer for comparison later
-    int initialCodeChip = floor(channel->codeChipPointer);
+    // Convert increment in seconds to chips, factoring in channel's code freqeuncy (affected by Doppler)
+    double totalIncrement_chips = (totalIncrement_s * channel->codeFrequency_Hz);
 
-    // Convert code advance in seconds to chips and add to current code phase
-    channel->codeChipPointer += (timeStep_s * channel->codeFrequency_Hz);
+    // Peck away at totalIncrement_chips in such away that we don't miss an instance when the navBitPointer should be incremented
+    while (totalIncrement_chips > 0) {
+        // Determine the maximum number of chips we can increment by this iteration
+        double partialIncrement_chips = fmin(totalIncrement_chips, CA_CODE_SEQUENCE_LENGTH);
 
-    // Calculate the change in C/A code chip index
-    int caChipPointerDelta = (int)floor(channel->codeChipPointer) - initialCodeChip;
+        // Update the number of remaining chips for the following iterations
+        totalIncrement_chips -= partialIncrement_chips;
 
-    // If there was a change in the C/A code chip...
-    if (caChipPointerDelta) {
-        // Wrap codeChipPointer around after each frame to prevent overflow
-        if (channel->codeChipPointer >= FRAME_CA_CHIP_COUNT) {
-            channel->codeChipPointer -= FRAME_CA_CHIP_COUNT;
+        // Update the code chip pointer and code chip
+        channel->codeChipPointer += partialIncrement_chips;
+        channel->codeChip = channel->sv->caCodeSequence[(int)fmod(channel->codeChipPointer, CA_CODE_SEQUENCE_LENGTH)];
+        
+        // Decide if the code chip pointer needs wrapping round
+        if (channel->codeChipPointer >= (CA_CODE_SEQUENCE_LENGTH * CA_CYCLES_PER_NAV_BIT)) {
+            channel->codeChipPointer -= (CA_CODE_SEQUENCE_LENGTH * CA_CYCLES_PER_NAV_BIT);
+            channel->navBitPointer++;
+            
+            // If we've gone past the last bit of this NAV frame...
+            if ((channel->navBitPointer % (SUBFRAME_COUNT * WORD_COUNT * WORD_BIT_COUNT)) == 0) {
+                channel->navBitPointer = 0;
+
+                // This check allows us to initilize the simulation more than a frame's worth of time (6 s) into the week
+                if (!init) {
+                    // Generate the next NAV frame!
+                    memcpy(channel->sv->navFrame, channel->sv->navFrameBoilerPlate, sizeof(channel->sv->navFrameBoilerPlate));
+                    generateNAVFrame(simulationTime, &(channel->previousWord), channel->sv->navFrame, false);
+                }
+            }
+
+            // Get the next NAV frame bit
+            short subframe = channel->navBitPointer / (WORD_COUNT * WORD_BIT_COUNT);
+            short word = (channel->navBitPointer % (WORD_COUNT * WORD_BIT_COUNT)) / WORD_BIT_COUNT;
+            short bit = channel->navBitPointer % WORD_BIT_COUNT;
+
+            channel->navBit = (channel->sv->navFrame[subframe][word] >> (29 - bit)) & 0x1;
         }
-
-        // Get the next C/A Code bit. Use the code phase to provide the offset. Modulo ensures sequence will not overflow
-        channel->codeChip = channel->sv->caCodeSequence[((int)floor(channel->codeChipPointer + channel->codePhase_chips) % CA_CODE_SEQUENCE_LENGTH)];
-
-        // Convert code phase to navbit index
-        channel->navBitPointer = (int)floor((channel->codeChipPointer + channel->codePhase_chips) / CA_CODE_SEQUENCE_LENGTH / CA_CYCLES_PER_NAV_BIT);
-
-        // Wrap the navbit pointer back around if it exceeds the frame size
-        channel->navBitPointer = (channel->navBitPointer % FRAME_BIT_COUNT);
-
-        // Get the current NAV frame bit
-        short subframe = channel->navBitPointer / (WORD_COUNT * WORD_BIT_COUNT);
-        short word = (channel->navBitPointer % (WORD_COUNT * WORD_BIT_COUNT)) / WORD_BIT_COUNT;
-        short bit = channel->navBitPointer % WORD_BIT_COUNT;
-
-        channel->navBit = (channel->sv->navFrame[subframe][word] >> (29 - bit)) & 0x1;
     }
 }
 
-void updateChannelPhases(Channel channels[CHANNEL_COUNT], double* receiverPosition_ecef) {
-    double codeDopplerShift_Hz;
-    double codePhase_s;
-    //double carrierCycles;
-
-    for (int channel = 0; channel < CHANNEL_COUNT; channel++) {
-        // Calculate the carrier frequency Doppler shift
+void updateChannelProperties(Channel* channels, int channelCount) {
+    for (int channel = 0; channel < channelCount; channel++) {
+        // Calculate the carrier Doppler shift
         // NOTE: See here for explanation: https://gnss-sdr.org/docs/sp-blocks/observables/#pseudorange-rate-measurement
         channels[channel].carrierDopplerShift_Hz = -channels[channel].sv->psuedorangeRate_ms / CARRIER_WAVELENGTH_M;
+        channels[channel].codeDopplerShift_Hz = -channels[channel].sv->psuedorangeRate_ms / CA_CODE_WAVELENGTH_M;
 
-        // Calculate the carrier frequency Doppler shift
+        // Calculate the C/A Code Doppler shift
         // NOTE: This is only performed for the fundermental freqeuncy as the expected modulation bandwidth
         //       is ~24 MHz and the Doppler spread over this range should be limited
-        codeDopplerShift_Hz = channels[channel].carrierDopplerShift_Hz * (CA_CODE_FREQUENCY_HZ / CARRIER_FREQUENCY_HZ);
+        channels[channel].codeFrequency_Hz = CA_CODE_FREQUENCY_HZ + channels[channel].codeDopplerShift_Hz;
 
-        channels[channel].codeFrequency_Hz = CA_CODE_FREQUENCY_HZ + codeDopplerShift_Hz;
-
-        // TODO: Move and uncomment these lines to enable carrier phase measurements!
+        // TODO: Uncomment these lines to enable carrier phase measurements
         // Calculate carrier cycles between reciever and satellite
-        //carrierCycles = (channels[channel].sv->psuedorange_m / CARRIER_WAVELENGTH_M);
+        // double carrierCycles = (channels[channel].sv->psuedorange_m / CARRIER_WAVELENGTH_M);
 
         // Find where we are within one cycle of the carrier phase
-        //channels[channel].carrierPhase_cycles = 0; //(carrierCycles - floor(carrierCycles));
-
-        // Calculate the difference in expected transmission delay
-        codePhase_s = (channels[channel].sv->psuedorange_m / LIGHTSPEED);
-
-        // Update channel code phase
-        channels[channel].codePhase_chips = (codePhase_s / CA_CODE_CHIP_DURATION_S);
+        // channels[channel].carrierPhase_cycles = 0; //(carrierCycles - floor(carrierCycles));
     }
 }
 
@@ -545,26 +582,33 @@ void simulate(void (*dumpCallback)(short*, int), eph_t* ephemerides, short svCou
     Channel channels[CHANNEL_COUNT];
     short iqBuffer[IQ_BUFFER_SIZE];
 
-    // Create array of pointers to SV elements for ranking satellite visibility
     SV** rankedSvs = (SV**)malloc(svCount * sizeof(*rankedSvs));
+
+    // TODO: Make this configurable
+    // Coordinates are for University of Leeds, School of Electronic and Electrical Engineering
+    double receiverPosition_llh[3] = { 53.8096268, -1.5553807, 5.0 };
+    double receiverPosition_ecef[3];
+
+    // TODO: Make the start time configurable
+    // Get week number and TOW from toe of the first ephemeris
+    int wn;
+    double tow_s = time2gpst(ephemerides[0].toc, &wn);
+    
+    // Snap TOW to most recent frame boundary
+    tow_s = ((unsigned long)ceil(tow_s) / (unsigned long)(SUBFRAME_DURATION_S * SUBFRAME_COUNT)) * (SUBFRAME_DURATION_S * SUBFRAME_COUNT);
+
+    // Setup the time variables
+    gtime_t simulationTime = gpst2time(wn, tow_s);
+    gtime_t simulationEndTime = timeadd(simulationTime, SAMPLE_DURATION_S);
+    gtime_t visibilityUpdateTime = simulationTime;
+
+    // Let the user know what start time was used
+    printf("SIMULATION START TIME: %s (WN: %i | TOW: %i)\n", time_str(simulationTime, 0), wn, (unsigned int)tow_s);
 
     // Populate satellite pointer array
     for (int i = 0; i < svCount; i++) {
         rankedSvs[i] = &svs[i];
     }
-
-    // Get week number from toe of the first ephemeris
-    int wn;
-    time2gpst(ephemerides->toe, &wn);
-
-    // TODO: Allow user to specify simulation start time and handle this properly in generateNAVFrame()
-    gtime_t simulationTime = gpst2time(wn, 6);
-    gtime_t simulationEndTime = timeadd(simulationTime, SAMPLE_DURATION_S);
-    gtime_t visibilityUpdateTime = simulationTime;
-
-    // Coordinates are for University of Leeds, School of Electronic and Electrical Engineering
-    double receiverPosition_llh[3] = { 53.8096268, -1.5553807, 5.0 };
-    double receiverPosition_ecef[3];
 
     // Setup satellites
     for (char i = 0; i < svCount; i++) {
@@ -580,6 +624,10 @@ void simulate(void (*dumpCallback)(short*, int), eph_t* ephemerides, short svCou
         // "The toe shall be equal to the toc of the same LNAV CEI data set" (Ref: 20.3.4.4 Data Sets)
         sv.ephemeris.toc = (ephemerides + i)->toe;
 
+        // Null the pseudorange and pseudorange rate
+        sv.psuedorange_m = 0;
+        sv.psuedorangeRate_ms = 0;
+
         // Generate miscellaneous data
         generateNAVFrameBoilerplate(sv.navFrameBoilerPlate, &sv.ephemeris);
         memcpy(sv.navFrame, sv.navFrameBoilerPlate, sizeof(sv.navFrameBoilerPlate));
@@ -593,13 +641,15 @@ void simulate(void (*dumpCallback)(short*, int), eph_t* ephemerides, short svCou
         Channel channel;
 
         channel.sv = NULL;
+        channel.carrierDopplerShift_Hz = 0;
+        channel.codeDopplerShift_Hz = 0;
+        channel.codeFrequency_Hz = 0;
+        channel.carrierPhase_cycles = 0;
         channel.previousWord = 0;
         channel.codeChip = 0;
-        channel.codeChipPointer = 0;
         channel.navBit = 0;
+        channel.codeChipPointer = 0;
         channel.navBitPointer = 0;
-        channel.codePhase_chips = 0;
-        channel.carrierPhase_cycles = 0;
 
         channels[i] = channel;
     }
@@ -623,10 +673,14 @@ void simulate(void (*dumpCallback)(short*, int), eph_t* ephemerides, short svCou
         // ...otherwise just update the visible satellite positions
         else {
             updateSatellitePositions(simulationTime, rankedSvs, CHANNEL_COUNT, receiverPosition_ecef, IQ_SAMPLE_WINDOW_S);
+
+            // Determine the code and carrier frequencies and phases
+            updateChannelProperties(channels, CHANNEL_COUNT);
         }
 
-        // Determine satellite-reciever distances and how this impacts the code and carrier phases
-        updateChannelPhases(channels, receiverPosition_ecef);
+        // Uncomment the following for debugging
+        // Dump the channel data
+        dumpChannels(simulationTime, channels, CHANNEL_COUNT);
 
         // Fill sample window IQ buffer
         for (int i = 0; i < IQ_BUFFER_SIZE; i += 2) {
@@ -636,17 +690,9 @@ void simulate(void (*dumpCallback)(short*, int), eph_t* ephemerides, short svCou
             int carrierPhaseIndex = 0;
 
             for (char channel = 0; channel < CHANNEL_COUNT; channel++) {
-                // Hold on to the current navbit pointer value
-                previousNavBitPointer = channels[channel].navBitPointer;
-
-                // Increment the code phase and update the channel modulation. May result in no change.
-                updateChannelModulation(&channels[channel], SAMPLE_INTERVAL_S);
-
                 // Map the channel's carrier phase to an index in the carrier phase look-up table
                 // NOTE: Using look-up table to save processing time otherwise spent computing trig functions
                 carrierPhaseIndex = (int)(channels[channel].carrierPhase_cycles * (TRIG_TABLE_SIZE - 1));
-
-                //printf("%i\n", sinTable[carrierPhaseIndex]);
 
                 // Write I followed by Q value to the buffer
                 // NOTES:
@@ -655,12 +701,8 @@ void simulate(void (*dumpCallback)(short*, int), eph_t* ephemerides, short svCou
                 iAccumulated += ((channels[channel].codeChip * 2) - 1) * ((channels[channel].navBit * 2) - 1) * cosTable[carrierPhaseIndex];
                 qAccumulated += ((channels[channel].codeChip * 2) - 1) * ((channels[channel].navBit * 2) - 1) * sinTable[carrierPhaseIndex];
 
-                // If the navbit pointer wrapped around (i.e. we've gone past the last bit of this NAV frame)...
-                if (channels[channel].navBitPointer < previousNavBitPointer) {
-                    // Generate the next NAV frame!
-                    memcpy(channels[channel].sv->navFrame, channels[channel].sv->navFrameBoilerPlate, sizeof(channels[channel].sv->navFrameBoilerPlate));
-                    generateNAVFrame(simulationTime, &(channels[channel].previousWord), channels[channel].sv->navFrame, false);
-                }
+                // Advance the channel modulation to the appropriate starting bit and chip. May result in no change yet
+                advanceChannelModulation(&channels[channel], simulationTime, SAMPLE_INTERVAL_S, false);
             }
 
             iqBuffer[i] = iAccumulated;
