@@ -10,7 +10,7 @@ An undergrad engineering project to understand GNSS opeartion via the developmen
 * Need to get progressbar lib from here: https://github.com/doches/progressbar
 
 ## Usage
-1. Read doc/uni-report.pdf
+1. Read uni-report-abridged.pdf
 2. Read src/main.c
 1. Profit
 
